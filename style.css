@@ -32,18 +32,19 @@ body {
     left: 0;
     right: 0;
     height: var(--header-h);
-    background: var(--primary);
-    color: white;
+    background: #1a1a2e;
+    color: #ffffff;
     display: flex;
     align-items: center;
     padding: 0 24px;
     z-index: 1000;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
 }
 
 .header h1 {
     font-size: 1.2rem;
     font-weight: 600;
+    color: #ffffff;
 }
 
 .header .nav-links {
@@ -52,8 +53,10 @@ body {
     gap: 8px;
 }
 
-.header .nav-links a {
-    color: rgba(255,255,255,0.9);
+.header .nav-links a,
+.header .nav-links a:visited,
+.header .nav-links a:link {
+    color: #ffffff;
     text-decoration: none;
     font-size: 0.85rem;
     padding: 4px 10px;
@@ -105,7 +108,9 @@ body {
     margin-bottom: 8px;
 }
 
-.sidebar a {
+.sidebar a,
+.sidebar a:visited,
+.sidebar a:link {
     display: block;
     padding: 6px 20px;
     color: var(--text);
@@ -253,7 +258,9 @@ blockquote {
     border-top: 2px solid var(--border);
 }
 
-.page-nav a {
+.page-nav a,
+.page-nav a:visited,
+.page-nav a:link {
     display: inline-flex;
     align-items: center;
     gap: 8px;
@@ -298,7 +305,9 @@ blockquote {
     color: var(--text-light);
 }
 
-.chapter-card a {
+.chapter-card a,
+.chapter-card a:visited,
+.chapter-card a:link {
     display: inline-block;
     margin-top: 12px;
     color: var(--primary);
