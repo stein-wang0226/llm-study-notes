@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>L02: N-gram语言模型 - LLM课程笔记</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="assets/katex.min.css">
+    <link rel="stylesheet" href="assets/monokai-sublime.min.css">
+    <script defer src="assets/katex.min.js"></script>
+    <script defer src="assets/auto-render.min.js"></script>
+    <script src="assets/highlight.min.js"></script>
+    <script src="assets/python.min.js"></script>
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+    <h1>NLP & LLM 课程学习笔记</h1>
+    <nav class="nav-links">
+        <a href="index.html">首页</a>
+        <a href="01-tokenization.html">L01</a>
+        <a href="02-ngram-lms.html" class="active">L02</a>
+        <a href="03-embeddings.html">L03</a>
+        <a href="04-neural-lm.html">L04</a>
+        <a href="05-transformer.html">L05</a>
+        <a href="06-gpt.html">L06</a>
+        <a href="07-bert-benchmarks.html">L07</a>
+        <a href="08-sft-rm-ppo.html">L08</a>
+    </nav>
+</header>
+
+<!-- Sidebar Toggle -->
+<button class="sidebar-toggle" onclick="document.querySelector('.sidebar').classList.toggle('open')">&#9776;</button>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+    <div class="toc-title">本章目录</div>
+    <a href="#motivation">1. 语言模型的动机</a>
+    <a href="#data-distribution">2. 数据分布框架</a>
+    <a href="#kl-problem" class="sub">2.1 问题设定</a>
+    <a href="#kl-objective" class="sub">2.2 训练目标：KL散度</a>
+    <a href="#kl-theorem" class="sub">2.3 关键定理</a>
+    <a href="#kl-properties" class="sub">2.4 KL性质</a>
+    <a href="#ngram-model">3. N-gram 语言模型</a>
+    <a href="#ngram-definition" class="sub">3.1 形式化定义</a>
+    <a href="#markov" class="sub">3.2 马尔可夫假设</a>
+    <a href="#eos" class="sub">3.3 为什么需要EOS</a>
+    <a href="#mle">4. 最大似然估计</a>
+    <a href="#unigram-mle" class="sub">4.1 Unigram MLE</a>
+    <a href="#bigram-mle" class="sub">4.2 Bigram MLE</a>
+    <a href="#general-mle" class="sub">4.3 一般N-gram MLE</a>
+    <a href="#smoothing">5. 平滑技术</a>
+    <a href="#sparsity" class="sub">5.1 稀疏性问题</a>
+    <a href="#laplace" class="sub">5.2 Add-&delta; 平滑</a>
+    <a href="#interpolation" class="sub">5.3 线性插值</a>
+    <a href="#katz" class="sub">5.4 Katz回退</a>
+    <a href="#kneser-ney" class="sub">5.5 Kneser-Ney</a>
+    <a href="#stupid-backoff" class="sub">5.6 Stupid Back-off</a>
+    <a href="#good-turing" class="sub">5.7 Good-Turing</a>
+    <a href="#perplexity">6. Perplexity</a>
+    <a href="#ppl-definition" class="sub">6.1 定义</a>
+    <a href="#ppl-intuition" class="sub">6.2 直觉解释</a>
+    <a href="#ppl-entropy" class="sub">6.3 与熵的关系</a>
+    <a href="#ppl-results" class="sub">6.4 实验结果</a>
+    <a href="#kenlm">7. KenLM 实战</a>
+    <a href="#generation">8. N-gram 文本生成</a>
+    <a href="#summary">核心要点总结</a>
+</aside>
+
+<!-- Main Content -->
+<div class="main">
+
+    <h1>Lecture 02: N-gram 语言模型</h1>
+    <blockquote>核心主题：数据分布与KL散度、N-gram MLE、平滑技术、Perplexity 评价指标</blockquote>
+
+    <!-- Section 1 -->
+    <h2 id="motivation">1. 语言模型的动机</h2>
+
+    <p>语言模型的根本任务：<strong>为句子赋予概率</strong>。</p>
+
+    <p>应用场景：</p>
+    <ul>
+        <li><strong>语音识别</strong>：P("recognize speech") &gt; P("wreck a nice beach")</li>
+        <li><strong>机器翻译</strong>：选择更自然的翻译</li>
+        <li><strong>拼写纠正</strong>：P("fifteen minutes") &gt; P("fifteen minuets")</li>
+    </ul>
+
+    <div class="info-box key">
+        <strong>核心问题</strong>：给定一个句子 $w_1, w_2, \ldots, w_n$，如何计算 $p(w_1, w_2, \ldots, w_n)$？
+    </div>
+
+    <!-- Section 2 -->
+    <h2 id="data-distribution">2. 数据分布框架</h2>
+
+    <h3 id="kl-problem">2.1 问题设定</h3>
+    <ul>
+        <li>真实分布 $p_{\text{data}}$ 未知</li>
+        <li>我们只观测到语料（样本）：$D = \{w^{(i)}\}_{i=1}^N$，$w^{(i)} \sim p_{\text{data}}$ i.i.d.</li>
+        <li>目标：训练模型 $p_\theta$ 使得 $p_\theta \approx p_{\text{data}}$</li>
+    </ul>
+
+    <h3 id="kl-objective">2.2 训练目标：最小化 KL 散度</h3>
+
+    <div class="math-block">
+        $$\theta^* = \arg\min_\theta \text{KL}(p_{\text{data}} \| p_\theta)$$
+    </div>
+
+    <h3 id="kl-theorem">2.3 关键定理：KL 最小化 = 最大期望对数似然</h3>
+
+    <div class="info-box formula">
+        <strong>定理</strong>：
+        $$\arg\min_\theta \text{KL}(p_{\text{data}}\|p_\theta) \Longleftrightarrow \arg\max_\theta \mathbb{E}_{w \sim p_{\text{data}}}[\log p_\theta(w)]$$
+    </div>
+
+    <p><strong>证明</strong>：</p>
+    <div class="math-block">
+        $$\text{KL}(p_{\text{data}}\|p_\theta) = \underbrace{\mathbb{E}[\log p_{\text{data}}(w)]}_{\text{关于}\theta\text{为常数}} - \mathbb{E}[\log p_\theta(w)]$$
+    </div>
+    <p>第一项关于 $\theta$ 为常数，所以最小化 KL = 最大化 $\mathbb{E}[\log p_\theta(w)]$。</p>
+
+    <p><strong>实践近似</strong>（蒙特卡洛）：</p>
+    <div class="math-block">
+        $$\max_\theta \frac{1}{N}\sum_{i=1}^N \log p_\theta(w^{(i)})$$
+    </div>
+
+    <h3 id="kl-properties">2.4 KL 散度性质</h3>
+    <ul>
+        <li><strong>不对称</strong>：$D_{KL}(p\|q) \neq D_{KL}(q\|p)$</li>
+        <li><strong>非负</strong>：$D_{KL}(p\|q) \geq 0$</li>
+        <li><strong>等于零的条件</strong>：$D_{KL}(p\|q) = 0$ 当且仅当 $p = q$</li>
+    </ul>
+
+    <!-- Section 3 -->
+    <h2 id="ngram-model">3. N-gram 语言模型</h2>
+
+    <h3 id="ngram-definition">3.1 形式化定义</h3>
+
+    <p><strong>词汇表</strong>：$V = \{v_1, v_2, \ldots, v_{|V|}\}$</p>
+    <p><strong>特殊符号</strong>：$v_0 = \text{BOS}$（句首），$v_{|V|+1} = \text{EOS}$（句尾）</p>
+
+    <p><strong>语言模型定义</strong>：概率分布 $p(w_{1:t})$，满足：</p>
+    <ol>
+        <li>$p(w_{1:t}) \geq 0$</li>
+        <li>$\sum_{w_{1:t}} p(w_{1:t}) = 1$</li>
+    </ol>
+
+    <p><strong>链式法则分解</strong>：</p>
+    <div class="math-block">
+        $$p(w_{1:t}) = \prod_{i=1}^t p(w_i \mid w_{1:i-1})$$
+    </div>
+
+    <h3 id="markov">3.2 N-gram 马尔可夫假设</h3>
+
+    <div class="info-box formula">
+        $$p(w_i \mid w_{1:i-1}) \approx p(w_i \mid w_{i-N+1:i-1})$$
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th>N</th>
+                <th>名称</th>
+                <th>模型</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>1</td>
+                <td>Unigram</td>
+                <td>$p(w_{1:t}) = \prod_i q(w_i)$</td>
+            </tr>
+            <tr>
+                <td>2</td>
+                <td>Bigram</td>
+                <td>$p(w_{1:t}) = \prod_i q(w_i \mid w_{i-1})$</td>
+            </tr>
+            <tr>
+                <td>3</td>
+                <td>Trigram</td>
+                <td>$p(w_{1:t}) = \prod_i q(w_i \mid w_{i-2}, w_{i-1})$</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <p><strong>参数量</strong>：$\sim |V|^N$（例：|V|=10000, N=3 → 约 $10^{12}$ 参数）</p>
+
+    <h3 id="eos">3.3 为什么需要 EOS</h3>
+    <p>句子长度 $t$ 本身是随机变量。EOS 标记使模型能学到何时终止生成，保证所有长度的句子概率之和为 1。</p>
+
+    <!-- Section 4 -->
+    <h2 id="mle">4. 最大似然估计 (MLE)</h2>
+
+    <h3 id="unigram-mle">4.1 Unigram MLE</h3>
+
+    <div class="math-block">
+        $$\hat{\theta}_i = \frac{C(v_i)}{\sum_j C(v_j)} = \frac{\text{该词出现次数}}{\text{总token数}}$$
+    </div>
+
+    <p><strong>推导</strong>：使用 Lagrange 乘子法，约束 $\sum_i \theta_i = 1$</p>
+
+    <h3 id="bigram-mle">4.2 Bigram MLE</h3>
+
+    <div class="math-block">
+        $$q(v_j \mid v_i) = \frac{C(v_i, v_j)}{\sum_k C(v_i, v_k)} = \frac{C(v_i, v_j)}{C(v_i)}$$
+    </div>
+
+    <h3 id="general-mle">4.3 一般 N-gram MLE</h3>
+
+    <div class="info-box formula">
+        <strong>通用公式</strong>：
+        $$q(x_N \mid x_{1:N-1}) = \frac{C(x_{1:N})}{C(x_{1:N-1})}$$
+    </div>
+
+    <p><strong>本质</strong>：相对频率估计 — N-gram 出现次数除以前缀出现次数。</p>
+
+    <!-- Section 5 -->
+    <h2 id="smoothing">5. 平滑技术</h2>
+
+    <h3 id="sparsity">5.1 稀疏性问题</h3>
+
+    <div class="info-box warning">
+        <strong>问题</strong>：即使在 3800 万词的语料中，<strong>1/3 的测试 trigram 从未出现</strong>。MLE 对未见 N-gram 赋予零概率 → 灾难性后果！
+    </div>
+
+    <h3 id="laplace">5.2 Add-&delta; (Laplace) 平滑</h3>
+
+    <div class="math-block">
+        $$q_{\text{Add}}(x_N \mid x_{1:N-1}) = \frac{\delta + C(x_{1:N})}{\delta(|V|+1) + C(x_{1:N-1})}$$
+    </div>
+
+    <p>$\delta = 1$：Laplace 平滑（加一平滑）。简单但通常效果不佳，分配给未见事件的概率过多。</p>
+
+    <h3 id="interpolation">5.3 线性插值</h3>
+
+    <p>混合各阶估计：</p>
+    <div class="math-block">
+        $$q_{\text{Int}}(x_3|x_{1:2}) = \lambda_1 \cdot q_{\text{ML}}(x_3) + \lambda_2 \cdot q_{\text{ML}}(x_3|x_2) + \lambda_3 \cdot q_{\text{ML}}(x_3|x_{1:2})$$
+    </div>
+
+    <p>约束 $\lambda_1 + \lambda_2 + \lambda_3 = 1$（从验证集学习最优权重）</p>
+
+    <h3 id="katz">5.4 Katz 回退 (Discounting)</h3>
+
+    <div class="math-block">
+        $$q_{\text{Katz}}(x_2|x_1) = \begin{cases} \frac{C^*(x_1,x_2)}{C(x_1)} & \text{if } C(x_1,x_2) > 0 \\ \alpha(x_1) \cdot \frac{q_{\text{ML}}(x_2)}{\sum_{x_2 \in B(x_1)} q_{\text{ML}}(x_2)} & \text{otherwise} \end{cases}$$
+    </div>
+
+    <p>其中 $C^* = C - \beta$（折扣计数，通常 $\beta = 0.5$）。对见过的 N-gram 打折，将省下的概率质量分配给未见的 N-gram。</p>
+
+    <h3 id="kneser-ney">5.5 Kneser-Ney 平滑 <span class="badge star">SOTA</span></h3>
+
+    <div class="info-box formula">
+        <strong>Kneser-Ney 公式</strong>：
+        $$q_{\text{KN}}(x_2|x_1) = \frac{\max\{C(x_1 x_2) - \delta, 0\}}{C(x_1)} + \lambda_{x_1} \cdot q_{\text{KN}}(x_2)$$
+    </div>
+
+    <p><strong>续接概率</strong>（Continuation Probability）：词 $x_2$ 在多少不同上下文中出现：</p>
+    <div class="math-block">
+        $$q_{\text{KN}}(x_2) = \frac{|\{x: C(x, x_2) > 0\}|}{|\{(a,b): C(a,b) > 0\}|}$$
+    </div>
+
+    <p><strong>核心思想</strong>：低阶分布不应该基于词频，而应基于"该词能在多少不同上下文中出现"。例如 "Francisco" 频率很高，但几乎只跟在 "San" 后面 → 续接概率低。</p>
+
+    <p><strong>Modified Kneser-Ney</strong> 是 N-gram 的 SOTA，实现在 <strong>KenLM</strong> 中。</p>
+
+    <h3 id="stupid-backoff">5.6 Stupid Back-off</h3>
+
+    <p>非正式概率分布，简单高效（适用于大规模 Web 数据）：</p>
+    <div class="math-block">
+        $$S(x_N|x_{1:N-1}) = \begin{cases} \frac{C(x_{1:N})}{C(x_{1:N-1})} & \text{if } C(x_{1:N}) > 0 \\ 0.4 \cdot S(x_N|x_{2:N-1}) & \text{otherwise} \end{cases}$$
+    </div>
+
+    <p>不保证概率和为 1，但在海量数据上效果与 KN 接近。</p>
+
+    <h3 id="good-turing">5.7 Good-Turing 平滑</h3>
+
+    <ul>
+        <li>$N_r$ = 恰好出现 $r$ 次的类型数（frequency of frequency）</li>
+        <li>调整计数：$r^* = (r+1) \cdot N_{r+1} / N_r$</li>
+        <li>Good-Turing 概率：$P^*_{GT}(w) = r^* / N$</li>
+    </ul>
+
+    <p>直觉：用"出现 $r+1$ 次的词有多少"来估计"出现 $r$ 次的词的真实概率"。</p>
+
+    <!-- Section 6 -->
+    <h2 id="perplexity">6. Perplexity (困惑度)</h2>
+
+    <h3 id="ppl-definition">6.1 定义</h3>
+
+    <p>设测试集 $s_1, \ldots, s_m$ 总词数 $M = \sum_i |s_i|$：</p>
+
+    <div class="info-box formula">
+        <strong>Perplexity 公式</strong>：
+        $$\ell = \frac{1}{M} \sum_{i=1}^m \log_2 p(s_i)$$
+        $$\text{PPL}(s_{1:m}) = 2^{-\ell}$$
+    </div>
+
+    <h3 id="ppl-intuition">6.2 直觉：平均分支因子 (Average Branching Factor)</h3>
+
+    <p>"模型平均需要从多少个候选中随机选择才能选对正确词"</p>
+    <ul>
+        <li>PPL 越低 = 模型越好</li>
+        <li>词表 |V| 上的均匀模型：PPL = |V|</li>
+        <li>|V| = 1,000,000 且 PPL = 30 → 模型有效搜索空间仅 30 个候选</li>
+    </ul>
+
+    <h3 id="ppl-entropy">6.3 与熵/交叉熵的关系</h3>
+
+    <div class="math-block">
+        $$H(p,q) = H(p) + D_{KL}(p\|q) \geq H(p)$$
+    </div>
+    <div class="math-block">
+        $$\text{PPL} = 2^{H(p,q)}$$
+    </div>
+    <p>交叉熵是真实熵的上界，PPL 是其指数形式。模型越接近真实分布，交叉熵越接近真实熵，PPL 越低。</p>
+
+    <h3 id="ppl-results">6.4 实验结果</h3>
+
+    <p><strong>GPT-2 on WikiText-2</strong>: PPL = <strong>24.38</strong></p>
+
+    <p><strong>KenLM N-gram on WikiText-103</strong> (Modified KN smoothing):</p>
+
+    <table>
+        <thead>
+            <tr>
+                <th>模型</th>
+                <th>PPL</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>2-gram</td>
+                <td>518.82</td>
+            </tr>
+            <tr>
+                <td>3-gram</td>
+                <td>347.78</td>
+            </tr>
+            <tr>
+                <td>4-gram</td>
+                <td>302.27</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="info-box key">
+        <strong>对比结论</strong>：GPT-2 (PPL~24) 远优于 N-gram (PPL~300+)，体现了神经语言模型相对于传统统计方法的巨大优势。
+    </div>
+
+    <!-- Section 7 -->
+    <h2 id="kenlm">7. KenLM 实战流程</h2>
+
+    <p><strong>训练 N-gram 模型</strong>：</p>
+    <pre><code class="language-bash"># 训练不同阶的 N-gram 模型 (Modified Kneser-Ney smoothing)
+lmplz -o 2 --text train_bpe.txt --arpa wikitext103_o2.arpa
+lmplz -o 3 --text train_bpe.txt --arpa wikitext103_o3.arpa
+lmplz -o 4 --text train_bpe.txt --arpa wikitext103_o4.arpa</code></pre>
+
+    <p><strong>Python 使用</strong>：</p>
+    <pre><code class="language-python">import kenlm
+
+# 加载模型
+model = kenlm.Model("wikitext103_o3.arpa")
+
+# 计算句子的 log10 概率
+sentence = "this is a sentence"
+log10_prob = model.score(sentence, bos=True, eos=True)
+print(f"log10 P('{sentence}') = {log10_prob:.4f}")
+
+# 逐词概率
+for i, (prob, length, oov) in enumerate(model.full_scores(sentence)):
+    print(f"  word {i}: log10_prob={prob:.4f}, ngram_length={length}, oov={oov}")
+
+# 计算 perplexity
+import math
+words = sentence.split()
+ppl = 10 ** (-log10_prob / (len(words) + 1))  # +1 for EOS
+print(f"PPL = {ppl:.2f}")</code></pre>
+
+    <!-- Section 8 -->
+    <h2 id="generation">8. N-gram 文本生成示例</h2>
+
+    <p>从 N-gram 模型生成文本（质量较差）：</p>
+
+    <table>
+        <thead>
+            <tr>
+                <th>模型</th>
+                <th>生成示例</th>
+                <th>评价</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>2-gram</td>
+                <td>"He is] = Week 15 pm guitar..."</td>
+                <td>完全不连贯</td>
+            </tr>
+            <tr>
+                <td>3-gram</td>
+                <td>"He is the angle bis: 23 women..."</td>
+                <td>略有改善但仍很差</td>
+            </tr>
+            <tr>
+                <td>4-gram</td>
+                <td>（较连贯的短语片段）</td>
+                <td>局部有意义但整体无逻辑</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="info-box warning">
+        <strong>结论</strong>：N-gram 模型无法生成连贯的长文本。固定上下文窗口 (N-1 个词) 严重限制了表达能力，无法捕捉长距离依赖关系。这正是后续神经语言模型 (L04-L06) 要解决的核心问题。
+    </div>
+
+    <!-- Summary -->
+    <h2 id="summary">核心要点总结</h2>
+
+    <div class="info-box key">
+        <ol>
+            <li><strong>KL 最小化 = MLE</strong>：最大化对数似然等价于最小化与真实分布的 KL 散度</li>
+            <li><strong>N-gram MLE 就是计数</strong>：相对频率 $C(x_{1:N})/C(x_{1:N-1})$</li>
+            <li><strong>平滑必不可少</strong>：即使 3800 万词语料，1/3 测试 trigram 从未出现</li>
+            <li><strong>Kneser-Ney 是 N-gram SOTA</strong>：Modified KN (KenLM) 是实用金标准</li>
+            <li><strong>更高 N 通常更好但收益递减</strong>：2→3→4-gram PPL: 518→348→302</li>
+            <li><strong>PPL 是语言模型的标准评价指标</strong>：越低越好，$\text{PPL} = 2^{H(p,q)}$</li>
+        </ol>
+    </div>
+
+    <!-- Page Navigation -->
+    <nav class="page-nav">
+        <a href="01-tokenization.html">&larr; L01: Tokenization</a>
+        <a href="03-embeddings.html">L03: 词嵌入 &rarr;</a>
+    </nav>
+
+</div>
+
+<script>
+    hljs.highlightAll();
+
+    // Sidebar toggle
+    var sidebar = document.getElementById('sidebar');
+    var toggle = document.getElementById('sidebarToggle');
+    if (toggle) {
+        toggle.addEventListener('click', function() {
+            sidebar.classList.toggle('open');
+        });
+    }
+    // Close sidebar on link click (mobile)
+    if (sidebar) {
+        sidebar.querySelectorAll('a').forEach(function(link) {
+            link.addEventListener('click', function() {
+                if (window.innerWidth <= 1024) {
+                    sidebar.classList.remove('open');
+                }
+            });
+        });
+    }
+</script>
+<script>
+    document.addEventListener("DOMContentLoaded", function() {
+        renderMathInElement(document.body, {
+            delimiters: [
+                {left: "$$", right: "$$", display: true},
+                {left: "$", right: "$", display: false}
+            ],
+            throwOnError: false
+        });
+    });
+</script>
+</body>
+</html>

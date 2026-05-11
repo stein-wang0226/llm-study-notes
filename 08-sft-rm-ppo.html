@@ -1,0 +1,1165 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>L08: RLHF对齐 - LLM课程笔记</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="assets/katex.min.css">
+    <link rel="stylesheet" href="assets/monokai-sublime.min.css">
+    <script defer src="assets/katex.min.js"></script>
+    <script defer src="assets/auto-render.min.js"></script>
+    <script src="assets/highlight.min.js"></script>
+    <script src="assets/python.min.js"></script>
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+    <h1>NLP & LLM 课程学习笔记</h1>
+    <nav class="nav-links">
+        <a href="index.html">首页</a>
+        <a href="01-tokenization.html">L01</a>
+        <a href="02-ngram-lms.html">L02</a>
+        <a href="03-embeddings.html">L03</a>
+        <a href="04-neural-lm.html">L04</a>
+        <a href="05-transformer.html">L05</a>
+        <a href="06-gpt.html">L06</a>
+        <a href="07-bert-benchmarks.html">L07</a>
+        <a href="08-sft-rm-ppo.html" class="active">L08</a>
+    </nav>
+</header>
+
+<!-- Sidebar Toggle -->
+<button class="sidebar-toggle" onclick="document.querySelector('.sidebar').classList.toggle('open')">&#9776;</button>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+    <div class="toc-title">本章目录</div>
+    <a href="#pipeline">1. InstructGPT 三阶段流水线</a>
+    <a href="#sft">2. Stage 1: SFT</a>
+    <a href="#sft-loss" class="sub">2.1 SFT Loss</a>
+    <a href="#prompt-template" class="sub">2.2 Prompt Template</a>
+    <a href="#sft-datasets" class="sub">2.3 常用 SFT 数据集</a>
+    <a href="#sft-code" class="sub">2.4 实现代码</a>
+    <a href="#sft-results" class="sub">2.5 训练结果</a>
+    <a href="#reward-model">3. Stage 2: Reward Model</a>
+    <a href="#bt-loss" class="sub">3.1 Bradley-Terry Loss</a>
+    <a href="#rm-arch" class="sub">3.2 RM 架构代码</a>
+    <a href="#rm-design" class="sub">3.3 关键设计选择</a>
+    <a href="#pref-datasets" class="sub">3.4 偏好数据集</a>
+    <a href="#ppo">4. Stage 3: RLHF via PPO</a>
+    <a href="#rlhf-obj" class="sub">4.1 RLHF Objective</a>
+    <a href="#ppo-clip" class="sub">4.2 PPO Clipped Surrogate</a>
+    <a href="#actor-critic" class="sub">4.3 ActorCritic 架构</a>
+    <a href="#ppo-loop" class="sub">4.4 PPO 训练循环</a>
+    <a href="#kl-penalty" class="sub">4.5 KL 惩罚作用</a>
+    <a href="#ppo-results" class="sub">4.6 训练结果</a>
+    <a href="#hyperparams">5. 完整超参数表</a>
+    <a href="#qualitative">6. 定性对比</a>
+    <a href="#design-choices">7. 关键设计选择</a>
+    <a href="#limitations">8. 已知问题与局限</a>
+    <a href="#formula-ref">9. 数学公式速查</a>
+    <a href="#further-reading">10. 延伸阅读</a>
+    <a href="#summary">核心要点总结</a>
+</aside>
+
+<!-- Main Content -->
+<div class="main">
+
+    <h1>Lecture 08: RLHF — SFT, Reward Model, PPO</h1>
+    <blockquote>核心主题：InstructGPT 三阶段流水线、监督微调、奖励模型、PPO 对齐</blockquote>
+
+    <!-- Section 1 -->
+    <h2 id="pipeline">1. InstructGPT 三阶段流水线 <span class="badge star">核心</span></h2>
+
+    <pre><code class="language-plaintext">┌─────────────────────────────────────────────────────────────────────────┐
+│                    InstructGPT Training Pipeline                        │
+├─────────────────┬──────────────────────┬────────────────────────────────┤
+│   Stage 1: SFT  │  Stage 2: Reward Model│  Stage 3: PPO (RLHF)         │
+│                 │                      │                                │
+│  Pretrained LLM │  SFT Model (frozen)  │  RM (frozen) + SFT (ref)      │
+│       │         │       │              │       │          │             │
+│       ▼         │       ▼              │       ▼          ▼             │
+│  Human demos    │  Human preferences   │  RL optimization               │
+│  (prompt,resp)  │  (x, y_w ≻ y_l)     │  max r(x,y) - β·KL            │
+│       │         │       │              │       │                        │
+│       ▼         │       ▼              │       ▼                        │
+│  SFT Model      │  Reward Model r_θ    │  PPO Policy π_φ               │
+└─────────────────┴──────────────────────┴────────────────────────────────┘
+
+数据量:    ~13K demos        ~33K comparisons      ~31K prompts
+标注成本:  高 (写完整回复)    中 (排序两个回复)      无 (自动采样)</code></pre>
+
+    <div class="info-box key">
+        <strong>核心思想</strong>：
+        <ul>
+            <li><strong>Pretrain</strong> 学会 "how to speak"（语言能力）</li>
+            <li><strong>SFT</strong> 学会 "format"（指令遵循格式）</li>
+            <li><strong>RM</strong> 捕获 "human preferences"（人类偏好信号）</li>
+            <li><strong>PPO</strong> 在 KL 约束下优化偏好（对齐人类意图）</li>
+        </ul>
+    </div>
+
+    <!-- Section 2 -->
+    <h2 id="sft">2. Stage 1: Supervised Fine-Tuning (SFT)</h2>
+
+    <h3 id="sft-loss">2.1 SFT Loss — 仅计算 response tokens</h3>
+
+    <div class="info-box formula">
+        <strong>SFT 损失函数</strong>：
+        $$\mathcal{L}_{\text{SFT}} = -\sum_{t \in \text{response}} \log p_\theta(x_t \mid x_{&lt;t})$$
+    </div>
+
+    <p><strong>关键细节</strong>：</p>
+    <ul>
+        <li>Prompt tokens 的 label 设为 <code>-100</code>（PyTorch CrossEntropyLoss 自动忽略）</li>
+        <li>只对 response 部分计算梯度 → 模型学习"给定 prompt 如何回答"</li>
+        <li>本质仍是 next-token prediction，但数据变为 (instruction, response) 对</li>
+    </ul>
+
+    <div class="math-block">
+        $$\text{完整序列: } \underbrace{[\text{BOS}] \text{ instruction tokens}}_{\text{label} = -100} \underbrace{\text{response tokens } [\text{EOS}]}_{\text{计算 loss}}$$
+    </div>
+
+    <h3 id="prompt-template">2.2 Prompt Template (Alpaca 格式)</h3>
+
+    <pre><code class="language-plaintext">Below is an instruction that describes a task, paired with an input
+that provides further context. Write a response that appropriately
+completes the request.
+
+### Instruction:
+{instruction}
+
+### Input:
+{input}
+
+### Response:
+{output}</code></pre>
+
+    <p><strong>模板设计原则</strong>：</p>
+    <ul>
+        <li>明确的分隔符（### Instruction / ### Response）</li>
+        <li>一致的格式让模型学会何时开始生成</li>
+        <li>推理时截断到 "### Response:\n" 后让模型续写</li>
+    </ul>
+
+    <h3 id="sft-datasets">2.3 常用 SFT 数据集</h3>
+
+    <table>
+        <thead>
+            <tr>
+                <th>数据集</th>
+                <th>规模</th>
+                <th>来源</th>
+                <th>特点</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Alpaca</td>
+                <td>52K</td>
+                <td>GPT-3.5 生成</td>
+                <td>Self-Instruct, 成本低</td>
+            </tr>
+            <tr>
+                <td>ShareGPT</td>
+                <td>90K</td>
+                <td>用户对话收集</td>
+                <td>多轮, 真实用户分布</td>
+            </tr>
+            <tr>
+                <td>Dolly</td>
+                <td>15K</td>
+                <td>人工标注</td>
+                <td>Databricks 员工标注</td>
+            </tr>
+            <tr>
+                <td>OASST1</td>
+                <td>160K</td>
+                <td>众包对话树</td>
+                <td>多轮 + 偏好标注</td>
+            </tr>
+            <tr>
+                <td>FLAN Collection</td>
+                <td>15M</td>
+                <td>NLP 任务混合</td>
+                <td>1800+ 任务, 大规模</td>
+            </tr>
+            <tr>
+                <td>InstructGPT demos</td>
+                <td>13K</td>
+                <td>人工标注</td>
+                <td>高质量, OpenAI 内部</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3 id="sft-code">2.4 实现代码 (SFTDataset)</h3>
+
+    <pre><code class="language-python">import torch
+from torch.utils.data import Dataset
+from transformers import AutoTokenizer
+
+class SFTDataset(Dataset):
+    """SFT 数据集：仅在 response 部分计算 loss"""
+    
+    def __init__(self, data, tokenizer, max_length=512):
+        self.data = data  # List of {"instruction": ..., "output": ...}
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+    
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        item = self.data[idx]
+        
+        # 构造 prompt
+        prompt = f"### Instruction:\n{item['instruction']}\n\n### Response:\n"
+        response = item['output'] + self.tokenizer.eos_token
+        
+        # 分别 tokenize
+        prompt_ids = self.tokenizer.encode(prompt, add_special_tokens=False)
+        response_ids = self.tokenizer.encode(response, add_special_tokens=False)
+        
+        # 拼接
+        input_ids = prompt_ids + response_ids
+        input_ids = input_ids[:self.max_length]
+        
+        # 构造 labels: prompt 部分为 -100, response 部分为 token id
+        labels = [-100] * len(prompt_ids) + response_ids
+        labels = labels[:self.max_length]
+        
+        # Padding
+        pad_len = self.max_length - len(input_ids)
+        input_ids = input_ids + [self.tokenizer.pad_token_id] * pad_len
+        labels = labels + [-100] * pad_len
+        attention_mask = [1] * (self.max_length - pad_len) + [0] * pad_len
+        
+        return {
+            "input_ids": torch.tensor(input_ids, dtype=torch.long),
+            "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
+            "labels": torch.tensor(labels, dtype=torch.long),
+        }
+
+
+# 训练循环
+from transformers import AutoModelForCausalLM, TrainingArguments, Trainer
+
+model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-2-7b-hf")
+tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
+tokenizer.pad_token = tokenizer.eos_token
+
+training_args = TrainingArguments(
+    output_dir="./sft_output",
+    num_train_epochs=3,
+    per_device_train_batch_size=4,
+    gradient_accumulation_steps=8,
+    learning_rate=2e-5,
+    warmup_ratio=0.03,
+    lr_scheduler_type="cosine",
+    bf16=True,
+    logging_steps=10,
+)
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=sft_dataset,
+)
+trainer.train()</code></pre>
+
+    <h3 id="sft-results">2.5 训练结果</h3>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Epoch</th>
+                <th>Train Loss</th>
+                <th>Eval Loss</th>
+                <th>PPL</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>1</td>
+                <td>1.82</td>
+                <td>1.75</td>
+                <td>5.75</td>
+            </tr>
+            <tr>
+                <td>2</td>
+                <td>1.45</td>
+                <td>1.52</td>
+                <td>4.57</td>
+            </tr>
+            <tr>
+                <td>3</td>
+                <td>1.21</td>
+                <td>1.58</td>
+                <td>4.86</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="info-box warning">
+        <strong>注意</strong>：Epoch 3 的 eval loss 上升，说明开始过拟合。InstructGPT 论文建议 SFT 只训练 <strong>1 epoch</strong>，避免过拟合标注者的写作风格。
+    </div>
+
+    <!-- Section 3 -->
+    <h2 id="reward-model">3. Stage 2: Reward Model</h2>
+
+    <h3 id="bt-loss">3.1 Bradley-Terry Loss <span class="badge star">核心</span></h3>
+
+    <p><strong>目标</strong>：学习一个标量奖励函数 $r_\theta(x, y)$，使得人类偏好的回复获得更高分。</p>
+
+    <div class="info-box formula">
+        <strong>Bradley-Terry 偏好模型</strong>：
+        $$P(y_w \succ y_l \mid x) = \sigma\left(r_\theta(x, y_w) - r_\theta(x, y_l)\right)$$
+        <br>
+        <strong>RM 损失函数</strong>：
+        $$\mathcal{L}_{\text{RM}} = -\mathbb{E}_{(x, y_w, y_l) \sim \mathcal{D}}\left[\log \sigma\left(r_\theta(x, y_w) - r_\theta(x, y_l)\right)\right]$$
+    </div>
+
+    <p><strong>直觉解读</strong>：</p>
+    <ul>
+        <li>$y_w$: 人类标注为更优的 (winner) 回复</li>
+        <li>$y_l$: 人类标注为较差的 (loser) 回复</li>
+        <li>$\sigma$: sigmoid 函数，将分差映射到 [0, 1] 概率</li>
+        <li>损失函数推动 $r(x, y_w) > r(x, y_l)$（拉大分差）</li>
+    </ul>
+
+    <h3 id="rm-arch">3.2 RM 架构代码 (RewardModel)</h3>
+
+    <pre><code class="language-python">import torch
+import torch.nn as nn
+from transformers import AutoModel
+
+class RewardModel(nn.Module):
+    """奖励模型：基于 SFT 模型初始化，移除 LM head，添加 scalar head"""
+    
+    def __init__(self, base_model_name, sft_checkpoint=None):
+        super().__init__()
+        # 加载 base transformer (不需要 LM head)
+        self.backbone = AutoModel.from_pretrained(base_model_name)
+        hidden_size = self.backbone.config.hidden_size
+        
+        # 标量奖励头：无 bias (InstructGPT 设计)
+        self.reward_head = nn.Linear(hidden_size, 1, bias=False)
+        
+        # 从 SFT checkpoint 初始化 backbone
+        if sft_checkpoint:
+            sft_state = torch.load(sft_checkpoint, map_location="cpu")
+            self.backbone.load_state_dict(sft_state, strict=False)
+    
+    def forward(self, input_ids, attention_mask):
+        """返回序列末尾 token 的 scalar reward"""
+        outputs = self.backbone(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+        )
+        hidden_states = outputs.last_hidden_state  # (B, T, H)
+        
+        # 取最后一个非 pad token 的 hidden state
+        # 方法: 用 attention_mask 找到每个序列的最后位置
+        seq_lengths = attention_mask.sum(dim=1) - 1  # (B,)
+        batch_idx = torch.arange(hidden_states.size(0), device=hidden_states.device)
+        last_hidden = hidden_states[batch_idx, seq_lengths]  # (B, H)
+        
+        reward = self.reward_head(last_hidden).squeeze(-1)  # (B,)
+        return reward
+
+
+class RMTrainer:
+    """RM 训练器：实现 Bradley-Terry pairwise loss"""
+    
+    def compute_loss(self, model, batch):
+        # batch 包含 chosen 和 rejected 对
+        r_chosen = model(
+            input_ids=batch["chosen_input_ids"],
+            attention_mask=batch["chosen_attention_mask"],
+        )
+        r_rejected = model(
+            input_ids=batch["rejected_input_ids"],
+            attention_mask=batch["rejected_attention_mask"],
+        )
+        
+        # Bradley-Terry loss
+        loss = -torch.log(torch.sigmoid(r_chosen - r_rejected)).mean()
+        
+        # 记录 accuracy
+        accuracy = (r_chosen > r_rejected).float().mean()
+        
+        return loss, {"accuracy": accuracy.item()}</code></pre>
+
+    <h3 id="rm-design">3.3 关键设计选择</h3>
+
+    <table>
+        <thead>
+            <tr>
+                <th>设计</th>
+                <th>选择</th>
+                <th>原因</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>初始化</td>
+                <td>从 SFT model 初始化</td>
+                <td>RM 需要理解语言，SFT 已具备</td>
+            </tr>
+            <tr>
+                <td>训练轮数</td>
+                <td>仅 1 epoch</td>
+                <td>避免过拟合偏好标注噪声</td>
+            </tr>
+            <tr>
+                <td>Reward head</td>
+                <td>Linear(H, 1, bias=False)</td>
+                <td>无 bias 避免 reward 偏移</td>
+            </tr>
+            <tr>
+                <td>取值位置</td>
+                <td>最后一个 token</td>
+                <td>看到完整回复后给出评分</td>
+            </tr>
+            <tr>
+                <td>模型大小</td>
+                <td>6B (InstructGPT)</td>
+                <td>比 policy (175B) 小，节省计算</td>
+            </tr>
+            <tr>
+                <td>数据格式</td>
+                <td>Pairwise comparison</td>
+                <td>相对排序比绝对评分一致性更高</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3 id="pref-datasets">3.4 偏好数据集</h3>
+
+    <table>
+        <thead>
+            <tr>
+                <th>数据集</th>
+                <th>规模</th>
+                <th>标注方式</th>
+                <th>特点</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>InstructGPT comparisons</td>
+                <td>33K</td>
+                <td>人工排序 4-9 个回复</td>
+                <td>高质量, 内部标注团队</td>
+            </tr>
+            <tr>
+                <td>Anthropic HH-RLHF</td>
+                <td>170K</td>
+                <td>人工选择 chosen/rejected</td>
+                <td>有害性 + 有用性</td>
+            </tr>
+            <tr>
+                <td>OpenAssistant (OASST)</td>
+                <td>90K</td>
+                <td>众包排名</td>
+                <td>多语言, 开源</td>
+            </tr>
+            <tr>
+                <td>UltraFeedback</td>
+                <td>64K</td>
+                <td>GPT-4 评分</td>
+                <td>AI 标注, 成本低</td>
+            </tr>
+            <tr>
+                <td>Stanford SHP</td>
+                <td>385K</td>
+                <td>Reddit 投票</td>
+                <td>自然偏好信号</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <!-- Section 4 -->
+    <h2 id="ppo">4. Stage 3: RLHF via PPO <span class="badge star">核心</span></h2>
+
+    <h3 id="rlhf-obj">4.1 RLHF Objective</h3>
+
+    <div class="info-box formula">
+        <strong>RLHF 优化目标</strong>：
+        $$\text{objective}(\phi) = \mathbb{E}_{(x,y) \sim \pi_\phi^{RL}}\left[r_\theta(x,y) - \beta \log\frac{\pi_\phi^{RL}(y|x)}{\pi^{SFT}(y|x)}\right]$$
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th>符号</th>
+                <th>含义</th>
+                <th>角色</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>$\pi_\phi^{RL}$</td>
+                <td>当前 RL 策略（actor）</td>
+                <td>正在优化的模型</td>
+            </tr>
+            <tr>
+                <td>$\pi^{SFT}$</td>
+                <td>SFT 模型（frozen reference）</td>
+                <td>KL 锚点，防止偏移</td>
+            </tr>
+            <tr>
+                <td>$r_\theta(x,y)$</td>
+                <td>奖励模型打分</td>
+                <td>衡量回复质量</td>
+            </tr>
+            <tr>
+                <td>$\beta$</td>
+                <td>KL 惩罚系数</td>
+                <td>控制探索与保守的平衡</td>
+            </tr>
+            <tr>
+                <td>$\log\frac{\pi_\phi^{RL}}{\pi^{SFT}}$</td>
+                <td>Per-token KL 散度</td>
+                <td>惩罚偏离参考策略</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <p><strong>等价形式</strong>（展开 KL）：</p>
+    <div class="math-block">
+        $$\text{objective}(\phi) = \mathbb{E}_{x \sim \mathcal{D}, y \sim \pi_\phi}\left[r_\theta(x,y)\right] - \beta \cdot D_{KL}\left(\pi_\phi^{RL} \| \pi^{SFT}\right)$$
+    </div>
+
+    <h3 id="ppo-clip">4.2 PPO Clipped Surrogate</h3>
+
+    <div class="info-box formula">
+        <strong>PPO-Clip 目标</strong>：
+        $$L^{CLIP}(\phi) = -\mathbb{E}_t\left[\min\left(r_t(\phi) \hat{A}_t,\; \text{clip}\left(r_t(\phi),\; 1-\varepsilon,\; 1+\varepsilon\right) \hat{A}_t\right)\right]$$
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th>符号</th>
+                <th>定义</th>
+                <th>说明</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>$r_t(\phi)$</td>
+                <td>$\frac{\pi_\phi(a_t|s_t)}{\pi_{\phi_{\text{old}}}(a_t|s_t)}$</td>
+                <td>重要性采样比 (IS ratio)</td>
+            </tr>
+            <tr>
+                <td>$\hat{A}_t$</td>
+                <td>GAE advantage estimate</td>
+                <td>当前 action 相对 baseline 的优势</td>
+            </tr>
+            <tr>
+                <td>$\varepsilon$</td>
+                <td>0.2 (常用值)</td>
+                <td>clip 范围，限制策略更新幅度</td>
+            </tr>
+            <tr>
+                <td>$\text{clip}(r_t, 1-\varepsilon, 1+\varepsilon)$</td>
+                <td>将比值裁剪到 [0.8, 1.2]</td>
+                <td>防止单步更新过大</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <p><strong>PPO-Clip 直觉</strong>：</p>
+    <ul>
+        <li>如果 $\hat{A}_t > 0$（好 action），允许 $r_t$ 增大但不超过 $1+\varepsilon$</li>
+        <li>如果 $\hat{A}_t < 0$（坏 action），允许 $r_t$ 减小但不低于 $1-\varepsilon$</li>
+        <li>效果：每步策略更新被限制在一个"信任区域"内 → 训练更稳定</li>
+    </ul>
+
+    <h3 id="actor-critic">4.3 ActorCritic 架构代码</h3>
+
+    <pre><code class="language-python">import torch
+import torch.nn as nn
+from transformers import AutoModelForCausalLM
+
+class ActorCritic(nn.Module):
+    """PPO Actor-Critic: Actor (policy) + Critic (value function)"""
+    
+    def __init__(self, model_name, sft_checkpoint=None):
+        super().__init__()
+        # Actor: 语言模型策略 π_φ
+        self.actor = AutoModelForCausalLM.from_pretrained(model_name)
+        if sft_checkpoint:
+            self.actor.load_state_dict(torch.load(sft_checkpoint))
+        
+        # Critic: 价值函数 V(s)，共享 backbone 或独立
+        self.critic_backbone = AutoModelForCausalLM.from_pretrained(model_name)
+        hidden_size = self.critic_backbone.config.hidden_size
+        self.value_head = nn.Linear(hidden_size, 1)
+    
+    def get_policy(self, input_ids, attention_mask):
+        """返回 token 级别的 log probabilities"""
+        outputs = self.actor(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+        )
+        logits = outputs.logits  # (B, T, V)
+        log_probs = torch.log_softmax(logits, dim=-1)
+        return log_probs
+    
+    def get_value(self, input_ids, attention_mask):
+        """返回每个 token 位置的 value estimate"""
+        outputs = self.critic_backbone(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+        )
+        hidden = outputs.hidden_states[-1]  # (B, T, H)
+        values = self.value_head(hidden).squeeze(-1)  # (B, T)
+        return values
+    
+    def forward(self, input_ids, attention_mask):
+        log_probs = self.get_policy(input_ids, attention_mask)
+        values = self.get_value(input_ids, attention_mask)
+        return log_probs, values</code></pre>
+
+    <h3 id="ppo-loop">4.4 PPO 训练循环代码</h3>
+
+    <pre><code class="language-python">import torch
+import torch.nn.functional as F
+
+class PPOTrainer:
+    """PPO 训练器 (简化版)"""
+    
+    def __init__(self, actor_critic, ref_model, reward_model, 
+                 kl_coeff=0.1, clip_eps=0.2, gamma=1.0, lam=0.95):
+        self.ac = actor_critic
+        self.ref_model = ref_model       # frozen SFT model
+        self.rm = reward_model           # frozen reward model
+        self.kl_coeff = kl_coeff         # β
+        self.clip_eps = clip_eps         # ε
+        self.gamma = gamma
+        self.lam = lam                   # GAE lambda
+    
+    @torch.no_grad()
+    def rollout(self, prompts, max_new_tokens=256):
+        """Phase 1: 用当前策略采样回复"""
+        responses = []
+        for prompt_ids in prompts:
+            # 自回归生成
+            output = self.ac.actor.generate(
+                input_ids=prompt_ids.unsqueeze(0),
+                max_new_tokens=max_new_tokens,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.9,
+            )
+            responses.append(output[0])
+        return responses
+    
+    @torch.no_grad()
+    def compute_rewards(self, prompt_ids, response_ids):
+        """计算 reward = RM score - β * per-token KL"""
+        full_ids = torch.cat([prompt_ids, response_ids], dim=1)
+        attention_mask = (full_ids != 0).long()
+        
+        # RM score (sequence-level)
+        rm_score = self.rm(full_ids, attention_mask)
+        
+        # Per-token KL penalty
+        policy_logprobs = self.ac.get_policy(full_ids, attention_mask)
+        ref_logprobs = self.ref_model(full_ids, attention_mask).log_softmax(-1)
+        
+        # KL(π_φ || π_ref) per token
+        kl_per_token = (policy_logprobs.exp() * (policy_logprobs - ref_logprobs)).sum(-1)
+        
+        # Token-level reward: 0 everywhere except last token gets RM score
+        # minus KL penalty at every token
+        rewards = -self.kl_coeff * kl_per_token
+        # Add RM score at the end of response
+        response_end = attention_mask.sum(-1) - 1
+        rewards[0, response_end] += rm_score
+        
+        return rewards
+    
+    def compute_gae(self, rewards, values, mask):
+        """Generalized Advantage Estimation"""
+        advantages = torch.zeros_like(rewards)
+        last_gae = 0
+        
+        for t in reversed(range(rewards.size(1))):
+            if t == rewards.size(1) - 1:
+                next_value = 0
+            else:
+                next_value = values[:, t + 1]
+            
+            delta = rewards[:, t] + self.gamma * next_value - values[:, t]
+            advantages[:, t] = last_gae = delta + self.gamma * self.lam * last_gae
+            advantages[:, t] *= mask[:, t]
+        
+        returns = advantages + values
+        return advantages, returns
+    
+    def ppo_update(self, batch, n_epochs=4):
+        """Phase 2: PPO policy gradient update"""
+        input_ids = batch["input_ids"]
+        attention_mask = batch["attention_mask"]
+        old_log_probs = batch["old_log_probs"]
+        advantages = batch["advantages"]
+        returns = batch["returns"]
+        response_mask = batch["response_mask"]
+        
+        for epoch in range(n_epochs):
+            # Current policy log probs
+            log_probs, values = self.ac(input_ids, attention_mask)
+            
+            # Gather log probs of actual tokens
+            action_log_probs = torch.gather(
+                log_probs[:, :-1], 2, input_ids[:, 1:].unsqueeze(-1)
+            ).squeeze(-1)
+            
+            # Importance sampling ratio
+            ratio = torch.exp(action_log_probs - old_log_probs)
+            
+            # PPO Clipped objective
+            surr1 = ratio * advantages
+            surr2 = torch.clamp(ratio, 1 - self.clip_eps, 1 + self.clip_eps) * advantages
+            policy_loss = -torch.min(surr1, surr2)
+            policy_loss = (policy_loss * response_mask).sum() / response_mask.sum()
+            
+            # Value loss
+            value_loss = F.mse_loss(values[:, :-1] * response_mask, 
+                                     returns * response_mask)
+            
+            # Total loss
+            loss = policy_loss + 0.5 * value_loss
+            
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.ac.parameters(), 1.0)
+            self.optimizer.step()
+            self.optimizer.zero_grad()
+        
+        return {"policy_loss": policy_loss.item(), "value_loss": value_loss.item()}</code></pre>
+
+    <h3 id="kl-penalty">4.5 KL 惩罚的作用</h3>
+
+    <div class="info-box warning">
+        <strong>为什么需要 KL 惩罚？ — 防止 Reward Hacking</strong>
+    </div>
+
+    <p>没有 KL 约束时，策略会找到 RM 的漏洞（adversarial examples）获得高分但输出垃圾：</p>
+
+    <table>
+        <thead>
+            <tr>
+                <th>现象</th>
+                <th>无 KL 约束</th>
+                <th>有 KL 约束</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>输出质量</td>
+                <td>重复、无意义但 RM 给高分</td>
+                <td>流畅、有意义的回答</td>
+            </tr>
+            <tr>
+                <td>RM score</td>
+                <td>极高（但虚假）</td>
+                <td>适度高（真实偏好）</td>
+            </tr>
+            <tr>
+                <td>KL 距离</td>
+                <td>无限增大</td>
+                <td>受控 (通常 &lt; 10 nats)</td>
+            </tr>
+            <tr>
+                <td>多样性</td>
+                <td>模式坍缩</td>
+                <td>保持多样性</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <p><strong>$\beta$ 的选择</strong>：</p>
+    <ul>
+        <li>$\beta$ 过大 → 策略几乎不更新，等于 SFT</li>
+        <li>$\beta$ 过小 → reward hacking，输出退化</li>
+        <li>InstructGPT 使用自适应 $\beta$：当 KL 超过目标时增大 $\beta$，低于目标时减小 $\beta$</li>
+    </ul>
+
+    <h3 id="ppo-results">4.6 训练结果</h3>
+
+    <table>
+        <thead>
+            <tr>
+                <th>训练步数</th>
+                <th>RM Score</th>
+                <th>KL (nats)</th>
+                <th>Win Rate vs SFT</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>0 (SFT init)</td>
+                <td>2.1</td>
+                <td>0.0</td>
+                <td>50%</td>
+            </tr>
+            <tr>
+                <td>500</td>
+                <td>3.2</td>
+                <td>2.8</td>
+                <td>62%</td>
+            </tr>
+            <tr>
+                <td>1000</td>
+                <td>3.8</td>
+                <td>5.1</td>
+                <td>68%</td>
+            </tr>
+            <tr>
+                <td>2000</td>
+                <td>4.1</td>
+                <td>7.3</td>
+                <td>71%</td>
+            </tr>
+            <tr>
+                <td>5000</td>
+                <td>4.3</td>
+                <td>9.5</td>
+                <td>72%</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="info-box key">
+        <strong>观察</strong>：RM score 和 win rate 同步增长但边际递减；KL 持续增大说明策略在不断偏离 SFT。需要在 "足够好" 时停止训练。
+    </div>
+
+    <!-- Section 5 -->
+    <h2 id="hyperparams">5. 完整超参数表</h2>
+
+    <table>
+        <thead>
+            <tr>
+                <th>超参数</th>
+                <th>SFT</th>
+                <th>RM</th>
+                <th>PPO</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Base model</td>
+                <td>GPT-3 175B</td>
+                <td>GPT-3 6B</td>
+                <td>SFT 175B</td>
+            </tr>
+            <tr>
+                <td>Learning rate</td>
+                <td>2e-5</td>
+                <td>9e-6</td>
+                <td>1.5e-5 (actor) / 5e-6 (critic)</td>
+            </tr>
+            <tr>
+                <td>Batch size</td>
+                <td>32</td>
+                <td>64</td>
+                <td>512 (rollout) / 64 (update)</td>
+            </tr>
+            <tr>
+                <td>Epochs</td>
+                <td>1 (16 for small)</td>
+                <td>1</td>
+                <td>4 (PPO epochs per batch)</td>
+            </tr>
+            <tr>
+                <td>Scheduler</td>
+                <td>Cosine</td>
+                <td>Cosine</td>
+                <td>Cosine</td>
+            </tr>
+            <tr>
+                <td>Max seq length</td>
+                <td>2048</td>
+                <td>2048</td>
+                <td>512 (prompt) + 256 (response)</td>
+            </tr>
+            <tr>
+                <td>Warmup ratio</td>
+                <td>3%</td>
+                <td>5%</td>
+                <td>0</td>
+            </tr>
+            <tr>
+                <td>KL coeff ($\beta$)</td>
+                <td>N/A</td>
+                <td>N/A</td>
+                <td>0.02 (adaptive)</td>
+            </tr>
+            <tr>
+                <td>Clip $\varepsilon$</td>
+                <td>N/A</td>
+                <td>N/A</td>
+                <td>0.2</td>
+            </tr>
+            <tr>
+                <td>GAE $\lambda$</td>
+                <td>N/A</td>
+                <td>N/A</td>
+                <td>0.95</td>
+            </tr>
+            <tr>
+                <td>Discount $\gamma$</td>
+                <td>N/A</td>
+                <td>N/A</td>
+                <td>1.0</td>
+            </tr>
+            <tr>
+                <td>Grad clip</td>
+                <td>1.0</td>
+                <td>1.0</td>
+                <td>1.0</td>
+            </tr>
+            <tr>
+                <td>数据量</td>
+                <td>~13K demos</td>
+                <td>~33K comparisons</td>
+                <td>~31K prompts</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <!-- Section 6 -->
+    <h2 id="qualitative">6. 定性对比</h2>
+
+    <p><strong>Prompt</strong>：<em>"Explain the moon landing to a 6 year old in a way that is inspiring."</em></p>
+
+    <table>
+        <thead>
+            <tr>
+                <th>模型</th>
+                <th>输出示例</th>
+                <th>评价</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>Base GPT-3</strong></td>
+                <td>"Explain the sun to a 6 year old. Explain gravity to a 6 year old. Explain..."</td>
+                <td>重复 prompt 模式，无法遵循指令</td>
+            </tr>
+            <tr>
+                <td><strong>SFT</strong></td>
+                <td>"So, a long time ago, people wanted to go to the moon. They built a really big rocket and three brave astronauts went inside..."</td>
+                <td>正确格式，但平淡，缺乏感染力</td>
+            </tr>
+            <tr>
+                <td><strong>PPO (RLHF)</strong></td>
+                <td>"Imagine you could jump SO high that you could touch the stars! Well, some very brave people actually did something like that..."</td>
+                <td>生动、有感染力、适合儿童</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="info-box key">
+        <strong>关键观察</strong>：
+        <ul>
+            <li>Base → SFT: 获得"遵循指令"能力（格式对了）</li>
+            <li>SFT → PPO: 回复质量提升（更吸引人、更有创意、更符合人类偏好）</li>
+            <li>PPO 学到了 "what humans prefer"，不仅仅是 "what is correct"</li>
+        </ul>
+    </div>
+
+    <!-- Section 7 -->
+    <h2 id="design-choices">7. 关键设计选择</h2>
+
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>设计选择</th>
+                <th>原因</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>1</td>
+                <td>RM 从 SFT 初始化</td>
+                <td>需要语言理解能力来评估回复质量</td>
+            </tr>
+            <tr>
+                <td>2</td>
+                <td>RM 只训 1 epoch</td>
+                <td>偏好标注有噪声，多 epoch 会过拟合噪声</td>
+            </tr>
+            <tr>
+                <td>3</td>
+                <td>RM 比 policy 小</td>
+                <td>PPO 中需要同时加载 4 个模型，RM 小可节省显存</td>
+            </tr>
+            <tr>
+                <td>4</td>
+                <td>Pairwise ranking 而非 pointwise</td>
+                <td>人类对相对比较比绝对评分更一致（标注者间一致性更高）</td>
+            </tr>
+            <tr>
+                <td>5</td>
+                <td>自适应 KL 系数</td>
+                <td>固定 $\beta$ 难以平衡不同训练阶段；自适应保持 KL 在目标范围</td>
+            </tr>
+            <tr>
+                <td>6</td>
+                <td>混合 pretrain 梯度</td>
+                <td>InstructGPT 在 PPO 阶段混合 pretrain loss 防止遗忘通用能力</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <!-- Section 8 -->
+    <h2 id="limitations">8. 已知问题与局限</h2>
+
+    <table>
+        <thead>
+            <tr>
+                <th>问题</th>
+                <th>描述</th>
+                <th>缓解方法</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>Reward Hacking</strong></td>
+                <td>策略找到 RM 漏洞获得虚假高分（如冗长回答、重复讨好词）</td>
+                <td>KL 惩罚、增大 RM、ensemble RM</td>
+            </tr>
+            <tr>
+                <td><strong>Distribution Shift</strong></td>
+                <td>RM 在 SFT 输出上训练，但 PPO 策略的输出不断变化，RM 评估不可靠</td>
+                <td>迭代训练（重新收集偏好数据）、PPO-max</td>
+            </tr>
+            <tr>
+                <td><strong>计算成本高</strong></td>
+                <td>PPO 需同时加载 4 个模型（actor, critic, ref, RM），显存需求 ~4x</td>
+                <td>LoRA、共享 backbone、DeepSpeed ZeRO</td>
+            </tr>
+            <tr>
+                <td><strong>训练不稳定</strong></td>
+                <td>PPO 对超参数敏感，reward 可能突然坍缩</td>
+                <td>梯度裁剪、小学习率、reward normalization</td>
+            </tr>
+            <tr>
+                <td><strong>标注者偏见</strong></td>
+                <td>RM 捕获标注者偏好（而非真实 "正确性"）</td>
+                <td>多样化标注团队、clear guidelines</td>
+            </tr>
+            <tr>
+                <td><strong>对齐税 (Alignment Tax)</strong></td>
+                <td>RLHF 后在某些 NLP benchmarks 上性能下降</td>
+                <td>混合 pretrain loss、保守 KL</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <!-- Section 9 -->
+    <h2 id="formula-ref">9. 数学公式速查</h2>
+
+    <div class="info-box formula">
+        <strong>1. SFT Loss</strong>：
+        $$\mathcal{L}_{\text{SFT}} = -\sum_{t \in \text{response}} \log p_\theta(x_t \mid x_{&lt;t})$$
+    </div>
+
+    <div class="info-box formula">
+        <strong>2. Bradley-Terry (RM Loss)</strong>：
+        $$\mathcal{L}_{\text{RM}} = -\mathbb{E}_{(x, y_w, y_l)}\left[\log \sigma\left(r_\theta(x, y_w) - r_\theta(x, y_l)\right)\right]$$
+    </div>
+
+    <div class="info-box formula">
+        <strong>3. RLHF Objective</strong>：
+        $$\max_\phi \; \mathbb{E}_{x, y \sim \pi_\phi}\left[r_\theta(x,y) - \beta \log\frac{\pi_\phi(y|x)}{\pi^{SFT}(y|x)}\right]$$
+    </div>
+
+    <div class="info-box formula">
+        <strong>4. PPO Clipped Surrogate</strong>：
+        $$L^{CLIP} = -\mathbb{E}_t\left[\min\left(r_t \hat{A}_t,\; \text{clip}(r_t, 1-\varepsilon, 1+\varepsilon)\hat{A}_t\right)\right]$$
+    </div>
+
+    <div class="info-box formula">
+        <strong>5. KL 散度 (per-token)</strong>：
+        $$D_{KL}(\pi_\phi \| \pi^{SFT}) = \mathbb{E}_{y \sim \pi_\phi}\left[\sum_t \log\frac{\pi_\phi(y_t|y_{&lt;t}, x)}{\pi^{SFT}(y_t|y_{&lt;t}, x)}\right]$$
+    </div>
+
+    <!-- Section 10 -->
+    <h2 id="further-reading">10. 延伸阅读</h2>
+
+    <ul>
+        <li><strong>InstructGPT 论文</strong>：<a href="https://arxiv.org/abs/2203.02155" target="_blank">Training language models to follow instructions with human feedback</a> (Ouyang et al., 2022)</li>
+        <li><strong>TRL (Transformer Reinforcement Learning)</strong>：<a href="https://github.com/huggingface/trl" target="_blank">HuggingFace TRL Library</a> — 一站式 SFT + RM + PPO/DPO 训练框架</li>
+        <li><strong>OpenRLHF</strong>：<a href="https://github.com/OpenRLHF/OpenRLHF" target="_blank">OpenRLHF</a> — 高性能分布式 RLHF 框架 (Ray + vLLM)</li>
+        <li><strong>DPO (Direct Preference Optimization)</strong>：<a href="https://arxiv.org/abs/2305.18290" target="_blank">Rafailov et al., 2023</a> — 无需 RM 和 PPO，直接从偏好数据优化策略</li>
+        <li><strong>PPO 原论文</strong>：<a href="https://arxiv.org/abs/1707.06347" target="_blank">Proximal Policy Optimization Algorithms</a> (Schulman et al., 2017)</li>
+        <li><strong>RLHF 综述</strong>：<a href="https://arxiv.org/abs/2307.15217" target="_blank">A Survey of Reinforcement Learning from Human Feedback</a></li>
+    </ul>
+
+    <!-- Summary -->
+    <h2 id="summary">核心要点总结</h2>
+
+    <div class="info-box key">
+        <ol>
+            <li><strong>三阶段流水线是核心框架</strong>：SFT (学格式) → RM (学偏好) → PPO (优化偏好)，每阶段解决不同问题</li>
+            <li><strong>SFT 只对 response 计算 loss</strong>：prompt 标记为 -100，本质是条件语言模型微调</li>
+            <li><strong>Bradley-Terry 模型将偏好转为分类</strong>：$\sigma(r_w - r_l)$ 将标量奖励差映射为偏好概率</li>
+            <li><strong>KL 惩罚是 RLHF 成功的关键</strong>：$\beta \cdot D_{KL}(\pi_\phi \| \pi^{SFT})$ 防止 reward hacking 和模式坍缩</li>
+            <li><strong>PPO-Clip 保证训练稳定性</strong>：限制每步策略更新幅度在 $[1-\varepsilon, 1+\varepsilon]$ 内</li>
+            <li><strong>PPO 的 4 模型问题是工程瓶颈</strong>：actor + critic + ref + RM 需要 ~4x 显存，催生了 DPO 等轻量替代方案</li>
+        </ol>
+    </div>
+
+    <!-- Page Navigation -->
+    <nav class="page-nav">
+        <a href="07-bert-benchmarks.html">&larr; L07: BERT与Benchmarks</a>
+        <a href="index.html">返回首页 &rarr;</a>
+    </nav>
+
+</div>
+
+<script>
+    hljs.highlightAll();
+
+    // Sidebar toggle
+    var sidebar = document.getElementById('sidebar');
+    var toggle = document.getElementById('sidebarToggle');
+    if (toggle) {
+        toggle.addEventListener('click', function() {
+            sidebar.classList.toggle('open');
+        });
+    }
+    // Close sidebar on link click (mobile)
+    if (sidebar) {
+        sidebar.querySelectorAll('a').forEach(function(link) {
+            link.addEventListener('click', function() {
+                if (window.innerWidth <= 1024) {
+                    sidebar.classList.remove('open');
+                }
+            });
+        });
+    }
+</script>
+<script>
+    document.addEventListener("DOMContentLoaded", function() {
+        renderMathInElement(document.body, {
+            delimiters: [
+                {left: "$$", right: "$$", display: true},
+                {left: "$", right: "$", display: false}
+            ],
+            throwOnError: false
+        });
+    });
+</script>
+</body>
+</html>

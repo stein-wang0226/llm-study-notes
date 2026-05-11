@@ -1,0 +1,974 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>L06: GPT系列 - LLM课程笔记</title>
+    <link rel="stylesheet" href="assets/katex.min.css">
+    <link rel="stylesheet" href="assets/monokai-sublime.min.css">
+    <script defer src="assets/katex.min.js"></script>
+    <script defer src="assets/auto-render.min.js"></script>
+    <script src="assets/highlight.min.js"></script>
+    <script src="assets/python.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+    <h1>NLP &amp; LLM 课程学习笔记</h1>
+    <nav class="nav-links">
+        <a href="index.html">目录</a>
+        <a href="01-tokenization.html">01</a>
+        <a href="02-ngram-lms.html">02</a>
+        <a href="03-embeddings.html">03</a>
+        <a href="04-neural-lms.html">04</a>
+        <a href="05-transformers.html">05</a>
+        <a href="06-gpts.html" class="active">06</a>
+        <a href="07-bert-benchmarks.html">07</a>
+        <a href="08-sft-rm-ppo.html">08</a>
+    </nav>
+</header>
+
+<!-- Sidebar Toggle -->
+<button class="sidebar-toggle" id="sidebarToggle">&#9776;</button>
+
+<!-- Sidebar -->
+<aside class="sidebar" id="sidebar">
+    <div class="toc-title">本章目录</div>
+    <a href="#sec1">1. GPT 模型家族</a>
+    <a href="#sec1-1" class="sub">1.1 GPT-2 规格</a>
+    <a href="#sec2">2. 文本生成策略</a>
+    <a href="#sec2-1" class="sub">2.1 最佳实践配置</a>
+    <a href="#sec3">3. GPT-2 架构实现</a>
+    <a href="#sec3-1" class="sub">3.1 与原始 Transformer 区别</a>
+    <a href="#sec3-2" class="sub">3.2 核心组件代码</a>
+    <a href="#sec4">4. 关键训练技巧</a>
+    <a href="#sec4-1" class="sub">4.1 Weight Tying</a>
+    <a href="#sec4-2" class="sub">4.2 残差流缩放初始化</a>
+    <a href="#sec4-3" class="sub">4.3 Vocab Size 对齐</a>
+    <a href="#sec5">5. Flash Attention</a>
+    <a href="#sec5-1" class="sub">5.1 标准注意力问题</a>
+    <a href="#sec5-2" class="sub">5.2 Flash Attention 优势</a>
+    <a href="#sec6">6. 完整预训练配置</a>
+    <a href="#sec6-1" class="sub">6.1 超参数表</a>
+    <a href="#sec6-2" class="sub">6.2 Cosine LR with Warmup</a>
+    <a href="#sec6-3" class="sub">6.3 优化器配置</a>
+    <a href="#sec6-4" class="sub">6.4 训练优化清单</a>
+    <a href="#sec6-5" class="sub">6.5 DDP 分布式训练</a>
+    <a href="#sec7">7. HellaSwag 评测</a>
+    <a href="#sec7-1" class="sub">7.1 任务描述</a>
+    <a href="#sec7-2" class="sub">7.2 评测方法</a>
+    <a href="#sec7-3" class="sub">7.3 结果对比</a>
+    <a href="#sec8">8. 从验证到全流程</a>
+    <a href="#sec8-1" class="sub">8.1 单 batch 过拟合</a>
+    <a href="#sec8-2" class="sub">8.2 随机 vs 预训练模型</a>
+    <a href="#summary">核心要点总结</a>
+</aside>
+
+<!-- Main Content -->
+<main class="main">
+    <h1>Lecture 06: GPT 系列</h1>
+    <blockquote>
+        核心主题：GPT 架构实现、从零预训练、Flash Attention、分布式训练 (DDP)、HellaSwag 评测
+    </blockquote>
+
+    <!-- Section 1 -->
+    <h2 id="sec1">1. GPT 模型家族</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>模型</th>
+                <th>发布时间</th>
+                <th>论文/公告</th>
+                <th>参数量</th>
+                <th>关键特点</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>GPT-1</td>
+                <td>2018.06</td>
+                <td>Improving Language Understanding by Generative Pre-Training</td>
+                <td>117M</td>
+                <td>首次验证 "预训练 + 微调" 范式</td>
+            </tr>
+            <tr>
+                <td>GPT-2</td>
+                <td>2019.02</td>
+                <td>Language Models are Unsupervised Multitask Learners</td>
+                <td>1.5B</td>
+                <td>Zero-shot 多任务，不公开最大模型</td>
+            </tr>
+            <tr>
+                <td>GPT-3</td>
+                <td>2020.05</td>
+                <td>Language Models are Few-Shot Learners</td>
+                <td>175B</td>
+                <td>In-context learning, few-shot prompting</td>
+            </tr>
+            <tr>
+                <td>GPT-4</td>
+                <td>2023.03</td>
+                <td>GPT-4 Technical Report</td>
+                <td>未公开 (传闻 MoE ~1.8T)</td>
+                <td>多模态，RLHF 对齐</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3 id="sec1-1">1.1 GPT-2 模型规格</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>模型</th>
+                <th>参数量</th>
+                <th>层数 (L)</th>
+                <th>隐藏维度 (d)</th>
+                <th>注意力头数 (H)</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>GPT-2 Small</td>
+                <td>124M</td>
+                <td>12</td>
+                <td>768</td>
+                <td>12</td>
+            </tr>
+            <tr>
+                <td>GPT-2 Medium</td>
+                <td>350M</td>
+                <td>24</td>
+                <td>1024</td>
+                <td>16</td>
+            </tr>
+            <tr>
+                <td>GPT-2 Large</td>
+                <td>774M</td>
+                <td>36</td>
+                <td>1280</td>
+                <td>20</td>
+            </tr>
+            <tr>
+                <td>GPT-2 XL</td>
+                <td>1558M</td>
+                <td>48</td>
+                <td>1600</td>
+                <td>25</td>
+            </tr>
+        </tbody>
+    </table>
+    <div class="info-box formula">
+        <strong>参数量估算</strong>：$\text{Params} \approx 12 \cdot L \cdot d^2$（忽略 embedding 层）
+    </div>
+
+    <!-- Section 2 -->
+    <h2 id="sec2">2. 文本生成策略</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>策略</th>
+                <th>原理</th>
+                <th>优点</th>
+                <th>缺点</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Greedy</td>
+                <td>每步选概率最大 token</td>
+                <td>确定性，速度快</td>
+                <td>重复、缺乏多样性</td>
+            </tr>
+            <tr>
+                <td>Beam Search</td>
+                <td>维护 top-k 候选序列</td>
+                <td>全局更优</td>
+                <td>仍偏保守，计算量大</td>
+            </tr>
+            <tr>
+                <td>Temperature</td>
+                <td>$p_i = \frac{\exp(z_i / T)}{\sum_j \exp(z_j / T)}$</td>
+                <td>控制随机性</td>
+                <td>需要手动调整 T</td>
+            </tr>
+            <tr>
+                <td>Top-k</td>
+                <td>仅从概率最高的 k 个 token 采样</td>
+                <td>避免低概率噪声</td>
+                <td>k 固定不够灵活</td>
+            </tr>
+            <tr>
+                <td>Top-p (Nucleus)</td>
+                <td>从累积概率 $\geq p$ 的最小 token 集合采样</td>
+                <td>自适应候选数量</td>
+                <td>实现稍复杂</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3 id="sec2-1">2.1 最佳实践配置</h3>
+    <div class="info-box key">
+        <strong>推荐配置</strong>：
+        <pre><code class="language-python">generation_config = {
+    "top_k": 50,
+    "top_p": 0.95,
+    "temperature": 0.7,
+    "repetition_penalty": 1.2,
+}</code></pre>
+        <p>通常 Top-k + Top-p + Temperature 组合使用，兼顾质量和多样性。</p>
+    </div>
+
+    <!-- Section 3 -->
+    <h2 id="sec3">3. GPT-2 架构实现 <span style="color:#e74c3c;">&#11088;&#11088;</span></h2>
+
+    <h3 id="sec3-1">3.1 与原始 Transformer 的区别</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>特性</th>
+                <th>原始 Transformer</th>
+                <th>GPT-2</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>架构</td>
+                <td>Encoder-Decoder</td>
+                <td>Decoder-only</td>
+            </tr>
+            <tr>
+                <td>LayerNorm 位置</td>
+                <td>Post-Norm (sublayer 之后)</td>
+                <td>Pre-Norm (sublayer 之前)</td>
+            </tr>
+            <tr>
+                <td>位置编码</td>
+                <td>固定正弦/余弦</td>
+                <td>可学习位置嵌入 (Learned PE)</td>
+            </tr>
+            <tr>
+                <td>激活函数</td>
+                <td>ReLU</td>
+                <td>GELU</td>
+            </tr>
+            <tr>
+                <td>最终 LayerNorm</td>
+                <td>无</td>
+                <td>在最后一个 block 之后添加 LN</td>
+            </tr>
+        </tbody>
+    </table>
+    <div class="info-box formula">
+        <strong>Pre-Norm 优势</strong>：梯度流动更稳定，训练深层网络更容易收敛；残差连接直接传递未归一化信号。
+    </div>
+
+    <h3 id="sec3-2">3.2 核心组件代码</h3>
+
+    <p><strong>GPTConfig 配置</strong>：</p>
+    <pre><code class="language-python">from dataclasses import dataclass
+
+@dataclass
+class GPTConfig:
+    block_size: int = 1024      # 最大序列长度
+    vocab_size: int = 50257     # GPT-2 词汇表大小
+    n_layer: int = 12           # Transformer 层数
+    n_head: int = 12            # 注意力头数
+    n_embd: int = 768           # 嵌入维度</code></pre>
+
+    <p><strong>CausalSelfAttention (含 Flash Attention)</strong>：</p>
+    <pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class CausalSelfAttention(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        assert config.n_embd % config.n_head == 0
+        # Q, K, V 投影合并为一个线性层
+        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
+        # 输出投影
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.c_proj.NANOGPT_SCALE_INIT = 1  # 残差流缩放标记
+        self.n_head = config.n_head
+        self.n_embd = config.n_embd
+
+    def forward(self, x):
+        B, T, C = x.size()  # batch, seq_len, embedding_dim
+        # 计算 Q, K, V
+        qkv = self.c_attn(x)
+        q, k, v = qkv.split(self.n_embd, dim=2)
+        # 重塑为多头: (B, n_head, T, head_dim)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        # Flash Attention (PyTorch 2.0+)
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        # 合并多头
+        y = y.transpose(1, 2).contiguous().view(B, T, C)
+        # 输出投影
+        y = self.c_proj(y)
+        return y</code></pre>
+
+    <p><strong>Block (Pre-Norm 结构)</strong>：</p>
+    <pre><code class="language-python">class MLP(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd)
+        self.gelu = nn.GELU(approximate='tanh')
+        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
+        self.c_proj.NANOGPT_SCALE_INIT = 1
+
+    def forward(self, x):
+        x = self.c_fc(x)
+        x = self.gelu(x)
+        x = self.c_proj(x)
+        return x
+
+class Block(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.ln_1 = nn.LayerNorm(config.n_embd)
+        self.attn = CausalSelfAttention(config)
+        self.ln_2 = nn.LayerNorm(config.n_embd)
+        self.mlp = MLP(config)
+
+    def forward(self, x):
+        # Pre-Norm: LN → Sublayer → Residual Add
+        x = x + self.attn(self.ln_1(x))
+        x = x + self.mlp(self.ln_2(x))
+        return x</code></pre>
+
+    <p><strong>GPT 模型</strong>：</p>
+    <pre><code class="language-python">class GPT(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.transformer = nn.ModuleDict(dict(
+            wte = nn.Embedding(config.vocab_size, config.n_embd),   # token embedding
+            wpe = nn.Embedding(config.block_size, config.n_embd),   # position embedding
+            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            ln_f = nn.LayerNorm(config.n_embd),  # 最终 LayerNorm
+        ))
+        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        # Weight Tying: 共享 token embedding 和 output 权重
+        self.transformer.wte.weight = self.lm_head.weight
+        # 初始化参数
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            std = 0.02
+            # 残差流路径上的投影层缩放初始化
+            if hasattr(module, 'NANOGPT_SCALE_INIT'):
+                std *= (2 * self.config.n_layer) ** -0.5
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+    def forward(self, idx, targets=None):
+        B, T = idx.size()
+        assert T <= self.config.block_size
+        # 前向传播
+        pos = torch.arange(0, T, dtype=torch.long, device=idx.device)
+        tok_emb = self.transformer.wte(idx)      # (B, T, n_embd)
+        pos_emb = self.transformer.wpe(pos)      # (T, n_embd)
+        x = tok_emb + pos_emb
+        # Transformer blocks
+        for block in self.transformer.h:
+            x = block(x)
+        x = self.transformer.ln_f(x)
+        logits = self.lm_head(x)                 # (B, T, vocab_size)
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+        return logits, loss</code></pre>
+
+    <!-- Section 4 -->
+    <h2 id="sec4">4. 关键训练技巧</h2>
+
+    <h3 id="sec4-1">4.1 Weight Tying <span style="color:#e74c3c;">&#11088;</span></h3>
+    <div class="info-box key">
+        <strong>核心思想</strong>：共享 token embedding 矩阵 ($W_e$) 和 LM head 矩阵 ($W_{out}$)。
+    </div>
+    <p><strong>原理</strong>：</p>
+    <ul>
+        <li>$W_e \in \mathbb{R}^{V \times d}$：将 token ID 映射为嵌入向量</li>
+        <li>$W_{out} \in \mathbb{R}^{d \times V}$：将隐状态映射回词汇表</li>
+        <li>令 $W_{out} = W_e^T$，则语义相近的 token 在输出空间也相近</li>
+    </ul>
+    <p><strong>参数节省</strong>：</p>
+    <div class="math-block">
+        $$\text{节省参数} = V \times d = 50257 \times 768 \approx 38.6M$$
+    </div>
+    <p>占 GPT-2 Small (124M) 总参数的约 <strong>31%</strong>！</p>
+    <pre><code class="language-python"># Weight Tying 实现
+self.transformer.wte.weight = self.lm_head.weight
+# 反向传播时，两处梯度会自动累加到同一张量</code></pre>
+
+    <h3 id="sec4-2">4.2 残差流缩放初始化 (Residual Stream Scaling)</h3>
+    <p>残差路径上的投影层（<code>c_proj</code>）使用缩放标准差初始化：</p>
+    <div class="math-block">
+        $$\sigma = \frac{0.02}{\sqrt{2 \cdot N_{layers}}}$$
+    </div>
+    <p><strong>动机</strong>：每个 block 有 2 条残差路径（attention + MLP），共 $2N$ 次累加。缩放确保残差流的方差不会随深度爆炸。</p>
+    <pre><code class="language-python"># 标记残差路径上的投影层
+self.c_proj.NANOGPT_SCALE_INIT = 1
+
+# 初始化时应用缩放
+if hasattr(module, 'NANOGPT_SCALE_INIT'):
+    std *= (2 * self.config.n_layer) ** -0.5</code></pre>
+
+    <h3 id="sec4-3">4.3 Vocab Size 对齐</h3>
+    <p>GPT-2 原始词汇表大小为 <strong>50257</strong>（不是 2 的幂次），修改为 <strong>50304</strong>：</p>
+    <div class="math-block">
+        $$50304 = 128 \times 393$$
+    </div>
+    <table>
+        <thead>
+            <tr>
+                <th>属性</th>
+                <th>50257</th>
+                <th>50304</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>是否为 128 的倍数</td>
+                <td>否</td>
+                <td>是</td>
+            </tr>
+            <tr>
+                <td>GPU Tensor Core 对齐</td>
+                <td>否（需 padding）</td>
+                <td>是（无浪费）</td>
+            </tr>
+            <tr>
+                <td>CUDA kernel 效率</td>
+                <td>较低</td>
+                <td>最优</td>
+            </tr>
+        </tbody>
+    </table>
+    <div class="info-box formula">
+        <strong>原因</strong>：GPU Tensor Core 以 8/16/32/64/128 为单位执行矩阵乘法。维度对齐后可完全利用硬件，避免 padding 浪费。额外 47 个 token 的 embedding 参数可忽略不计。
+    </div>
+
+    <!-- Section 5 -->
+    <h2 id="sec5">5. Flash Attention <span style="color:#e74c3c;">&#11088;</span></h2>
+
+    <h3 id="sec5-1">5.1 标准注意力的问题</h3>
+    <p>标准自注意力需要显式计算并存储完整的注意力矩阵：</p>
+    <div class="math-block">
+        $$\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right) V$$
+    </div>
+    <p><strong>内存瓶颈</strong>：</p>
+    <ul>
+        <li>注意力矩阵 $QK^T$ 大小为 $O(T^2)$</li>
+        <li>序列长度 T=1024 时：$1024 \times 1024 \times 4\text{bytes} \approx 4\text{MB/head}$</li>
+        <li>T=4096 时：$\approx 64\text{MB/head}$，多头 + batch 后显存占用巨大</li>
+    </ul>
+    <p><strong>IO 瓶颈</strong>：</p>
+    <ul>
+        <li>$QK^T$ 在 HBM 中分配 → 写入 HBM → 读回计算 softmax → 再写入 → 再读回乘 V</li>
+        <li>多次 HBM 读写是主要性能瓶颈（GPU 计算速度远快于显存带宽）</li>
+    </ul>
+
+    <h3 id="sec5-2">5.2 Flash Attention 优势</h3>
+    <div class="info-box key">
+        <strong>核心思想</strong>：IO-Aware，在 SRAM（片上高速缓存）中完成尽可能多的计算，避免反复读写 HBM。
+    </div>
+    <table>
+        <thead>
+            <tr>
+                <th>特性</th>
+                <th>标准 Attention</th>
+                <th>Flash Attention</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>内存复杂度</td>
+                <td>$O(T^2)$</td>
+                <td>$O(T)$</td>
+            </tr>
+            <tr>
+                <td>是否物化注意力矩阵</td>
+                <td>是（完整 $T \times T$ 矩阵）</td>
+                <td>否（分块计算，不存储完整矩阵）</td>
+            </tr>
+            <tr>
+                <td>HBM 访问次数</td>
+                <td>多次（Q, K, V, Attn, Output）</td>
+                <td>少（一次加载 tiles 到 SRAM）</td>
+            </tr>
+            <tr>
+                <td>实际速度</td>
+                <td>基准</td>
+                <td>2-4x 加速</td>
+            </tr>
+        </tbody>
+    </table>
+    <p><strong>关键技术</strong>：</p>
+    <ol>
+        <li><strong>Tiling (分块)</strong>：将 Q, K, V 分成小块，逐块在 SRAM 中计算</li>
+        <li><strong>Kernel Fusion (算子融合)</strong>：将 matmul → scale → mask → softmax → matmul 融合为单一 CUDA kernel</li>
+        <li><strong>Online Softmax</strong>：增量计算 softmax，无需完整行数据</li>
+        <li><strong>Recomputation</strong>：反向传播时重新计算注意力（trade compute for memory）</li>
+    </ol>
+    <pre><code class="language-python"># PyTorch 2.0+ 原生支持 Flash Attention
+# 自动根据硬件选择最优实现 (FlashAttention-2, Memory-Efficient, Math)
+y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+# 等价于手动实现但速度提升 2-4x，显存节省 5-20x</code></pre>
+
+    <!-- Section 6 -->
+    <h2 id="sec6">6. 完整预训练配置 (FineWeb-Edu 10B)</h2>
+
+    <h3 id="sec6-1">6.1 超参数表</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>超参数</th>
+                <th>值</th>
+                <th>说明</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Total batch size</td>
+                <td>524,288 tokens</td>
+                <td>$= 2^{19}$，GPT-3 论文设置</td>
+            </tr>
+            <tr>
+                <td>Micro batch size</td>
+                <td>64</td>
+                <td>单 GPU 单次前向的样本数</td>
+            </tr>
+            <tr>
+                <td>Sequence length</td>
+                <td>1024</td>
+                <td>GPT-2 上下文窗口</td>
+            </tr>
+            <tr>
+                <td>Gradient accumulation steps</td>
+                <td>$\frac{524288}{64 \times 1024 \times \text{n\_gpu}}$</td>
+                <td>梯度累积步数</td>
+            </tr>
+            <tr>
+                <td>Max learning rate</td>
+                <td>6e-4</td>
+                <td>GPT-3 中 124M 模型的 LR</td>
+            </tr>
+            <tr>
+                <td>Min learning rate</td>
+                <td>6e-5</td>
+                <td>max_lr 的 10%</td>
+            </tr>
+            <tr>
+                <td>Warmup steps</td>
+                <td>715</td>
+                <td>约 375M tokens</td>
+            </tr>
+            <tr>
+                <td>Max steps</td>
+                <td>19,073</td>
+                <td>$\approx \frac{10B}{524288}$</td>
+            </tr>
+            <tr>
+                <td>Weight decay</td>
+                <td>0.1</td>
+                <td>仅对 2D 参数（权重矩阵）</td>
+            </tr>
+            <tr>
+                <td>Optimizer</td>
+                <td>AdamW</td>
+                <td>$\beta_1=0.9, \beta_2=0.95, \epsilon=10^{-8}$</td>
+            </tr>
+            <tr>
+                <td>Grad clip</td>
+                <td>1.0</td>
+                <td>全局梯度范数裁剪</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3 id="sec6-2">6.2 Cosine LR with Warmup</h3>
+    <pre><code class="language-python">import math
+
+def get_lr(step, warmup_steps, max_steps, max_lr, min_lr):
+    # 1) 线性 warmup 阶段
+    if step < warmup_steps:
+        return max_lr * (step + 1) / warmup_steps
+    # 2) 训练结束后保持最小学习率
+    if step > max_steps:
+        return min_lr
+    # 3) Cosine decay 阶段
+    decay_ratio = (step - warmup_steps) / (max_steps - warmup_steps)
+    assert 0 <= decay_ratio <= 1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  # 从1衰减到0
+    return min_lr + coeff * (max_lr - min_lr)</code></pre>
+    <div class="info-box formula">
+        <strong>Cosine Schedule</strong>：$\text{lr}(t) = \text{lr}_{min} + \frac{1}{2}(\text{lr}_{max} - \text{lr}_{min})\left(1 + \cos\left(\frac{\pi \cdot t}{T}\right)\right)$
+    </div>
+
+    <h3 id="sec6-3">6.3 优化器配置 (Weight Decay 分离)</h3>
+    <pre><code class="language-python">def configure_optimizers(model, weight_decay, learning_rate, device):
+    # 收集所有需要梯度的参数
+    param_dict = {pn: p for pn, p in model.named_parameters() if p.requires_grad}
+    # 区分需要 weight decay 的参数 (2D 权重矩阵) 和不需要的 (bias, LayerNorm)
+    decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
+    nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+    optim_groups = [
+        {"params": decay_params, "weight_decay": weight_decay},
+        {"params": nodecay_params, "weight_decay": 0.0},
+    ]
+    num_decay = sum(p.numel() for p in decay_params)
+    num_nodecay = sum(p.numel() for p in nodecay_params)
+    print(f"decay params: {num_decay:,}, no-decay params: {num_nodecay:,}")
+    # 使用 fused AdamW (更快的 CUDA 实现)
+    use_fused = 'cuda' in device
+    optimizer = torch.optim.AdamW(
+        optim_groups, lr=learning_rate,
+        betas=(0.9, 0.95), eps=1e-8,
+        fused=use_fused
+    )
+    return optimizer</code></pre>
+    <div class="info-box key">
+        <strong>Weight Decay 分离原则</strong>：
+        <ul>
+            <li><strong>Apply decay</strong>：所有权重矩阵（dim &ge; 2），如 <code>c_attn.weight</code>, <code>c_proj.weight</code></li>
+            <li><strong>No decay</strong>：bias、LayerNorm 参数（dim &lt; 2），这些参数本身不会导致过拟合</li>
+        </ul>
+    </div>
+
+    <h3 id="sec6-4">6.4 训练优化清单</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>优化项</th>
+                <th>效果</th>
+                <th>代码/设置</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>1</td>
+                <td>BF16 混合精度</td>
+                <td>显存减半，计算加速</td>
+                <td><code>torch.autocast(device, dtype=torch.bfloat16)</code></td>
+            </tr>
+            <tr>
+                <td>2</td>
+                <td>TF32 Tensor Core</td>
+                <td>FP32 运算自动加速</td>
+                <td><code>torch.set_float32_matmul_precision('high')</code></td>
+            </tr>
+            <tr>
+                <td>3</td>
+                <td>Flash Attention</td>
+                <td>注意力 2-4x 加速</td>
+                <td><code>F.scaled_dot_product_attention(is_causal=True)</code></td>
+            </tr>
+            <tr>
+                <td>4</td>
+                <td>Gradient Accumulation</td>
+                <td>模拟大 batch</td>
+                <td>累积 N 步后统一 <code>optimizer.step()</code></td>
+            </tr>
+            <tr>
+                <td>5</td>
+                <td>DDP 分布式</td>
+                <td>多 GPU 线性加速</td>
+                <td><code>torchrun --nproc_per_node=N</code></td>
+            </tr>
+            <tr>
+                <td>6</td>
+                <td>Fused AdamW</td>
+                <td>优化器 kernel 融合</td>
+                <td><code>torch.optim.AdamW(..., fused=True)</code></td>
+            </tr>
+            <tr>
+                <td>7</td>
+                <td>torch.compile</td>
+                <td>计算图编译优化</td>
+                <td><code>model = torch.compile(model)</code></td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3 id="sec6-5">6.5 DDP 分布式训练 (Distributed Data Parallel)</h3>
+    <p><strong>启动命令</strong>：</p>
+    <pre><code class="language-python"># 单机 8 GPU
+torchrun --standalone --nproc_per_node=8 train_gpt2.py
+
+# 多机 (2 nodes x 8 GPUs)
+torchrun --nproc_per_node=8 --nnodes=2 --node_rank=0 \
+         --master_addr=host0 --master_port=29500 train_gpt2.py</code></pre>
+
+    <p><strong>DDP 初始化与梯度同步</strong>：</p>
+    <pre><code class="language-python">import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+# 初始化进程组
+dist.init_process_group(backend='nccl')
+ddp_rank = int(os.environ['RANK'])
+ddp_local_rank = int(os.environ['LOCAL_RANK'])
+ddp_world_size = int(os.environ['WORLD_SIZE'])
+device = f'cuda:{ddp_local_rank}'
+torch.cuda.set_device(device)
+master_process = (ddp_rank == 0)  # 主进程负责 logging/checkpoint
+
+# 包装模型
+model = GPT(GPTConfig(vocab_size=50304))
+model = model.to(device)
+model = DDP(model, device_ids=[ddp_local_rank])
+raw_model = model.module  # 访问原始模型
+
+# 训练循环中的梯度同步控制
+for micro_step in range(grad_accum_steps):
+    # 最后一步才同步梯度，前面的步骤不需要 all-reduce
+    if micro_step < grad_accum_steps - 1:
+        model.require_backward_grad_sync = False
+    else:
+        model.require_backward_grad_sync = True
+    with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+        logits, loss = model(x, y)
+    loss = loss / grad_accum_steps  # 归一化
+    loss.backward()</code></pre>
+
+    <div class="info-box formula">
+        <strong>DDP 原理</strong>：每个 GPU 持有模型完整副本，数据并行分片。前向独立计算，反向时通过 NCCL All-Reduce 同步梯度，确保所有 GPU 参数一致更新。
+    </div>
+
+    <!-- Section 7 -->
+    <h2 id="sec7">7. HellaSwag 评测</h2>
+
+    <h3 id="sec7-1">7.1 任务描述</h3>
+    <p><strong>HellaSwag</strong> (Harder Endings, Longer contexts, and Low-shot Activities for Situations With Adversarial Generations) 是一个常识推理 benchmark：</p>
+    <ul>
+        <li>给定一个场景描述（context），从 4 个候选续写中选择最合理的一个</li>
+        <li>对抗性生成的干扰项，对人类很简单（~95%）但对模型很难</li>
+        <li>测试模型的常识推理和语言理解能力</li>
+    </ul>
+
+    <h3 id="sec7-2">7.2 评测方法代码</h3>
+    <pre><code class="language-python">def get_most_likely_row(tokens, mask, logits):
+    """
+    评测逻辑：计算每个候选续写的平均 token 对数概率，
+    选择概率最高的作为模型预测。
+    """
+    # 将 logits 向左移一位对齐 (next token prediction)
+    shift_logits = (logits[..., :-1, :]).contiguous()
+    shift_tokens = (tokens[..., 1:]).contiguous()
+    # 计算每个位置的 log probability
+    flat_shift_logits = shift_logits.view(-1, shift_logits.size(-1))
+    flat_shift_tokens = shift_tokens.view(-1)
+    shift_losses = F.cross_entropy(
+        flat_shift_logits, flat_shift_tokens, reduction='none'
+    )
+    shift_losses = shift_losses.view(tokens.size(0), -1)
+    # 只关注续写部分 (mask=1 的位置)
+    shift_mask = (mask[..., 1:]).contiguous()
+    masked_shift_losses = shift_losses * shift_mask
+    # 计算每个候选的平均 loss
+    sum_loss = masked_shift_losses.sum(dim=1)
+    avg_loss = sum_loss / shift_mask.sum(dim=1)
+    # loss 最小 = 概率最大 → 模型的选择
+    pred_idx = avg_loss.argmin().item()
+    return pred_idx</code></pre>
+
+    <h3 id="sec7-3">7.3 结果对比</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>模型</th>
+                <th>参数量</th>
+                <th>HellaSwag 准确率</th>
+                <th>备注</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>GPT-2 (124M) 官方</td>
+                <td>124M</td>
+                <td>29.55%</td>
+                <td>HuggingFace 权重</td>
+            </tr>
+            <tr>
+                <td>GPT-2 (350M) 官方</td>
+                <td>350M</td>
+                <td>37.41%</td>
+                <td>-</td>
+            </tr>
+            <tr>
+                <td>GPT-2 (774M) 官方</td>
+                <td>774M</td>
+                <td>43.69%</td>
+                <td>-</td>
+            </tr>
+            <tr>
+                <td>GPT-2-XL (1558M) 官方</td>
+                <td>1558M</td>
+                <td>48.93%</td>
+                <td>-</td>
+            </tr>
+            <tr>
+                <td>GPT-3 (175B)</td>
+                <td>175B</td>
+                <td>78.9%</td>
+                <td>论文报告</td>
+            </tr>
+            <tr>
+                <td>我们复现 (124M)</td>
+                <td>124M</td>
+                <td>~30%</td>
+                <td>10B tokens 训练</td>
+            </tr>
+        </tbody>
+    </table>
+    <div class="info-box key">
+        <strong>观察</strong>：HellaSwag 准确率随参数量和训练数据量的增加而稳定提升，体现了 scaling law 的趋势。124M 模型在 10B tokens 上训练即可接近官方水平。
+    </div>
+
+    <!-- Section 8 -->
+    <h2 id="sec8">8. 从验证到全流程</h2>
+
+    <h3 id="sec8-1">8.1 单 batch 过拟合验证</h3>
+    <p><strong>目的</strong>：在正式训练前验证模型实现的正确性。</p>
+    <pre><code class="language-python"># 验证流程：用单个 batch 反复训练，loss 应降到接近 0
+# 初始 loss 应接近 -ln(1/50257) ≈ 10.82
+# Step 0: loss = 10.96 (随机初始化，略高于理论值)
+# Step 1: loss = 9.22
+# ...
+# Step 50: loss = 0.01 (成功过拟合 → 模型实现正确)</code></pre>
+    <table>
+        <thead>
+            <tr>
+                <th>训练步</th>
+                <th>Loss</th>
+                <th>状态</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>0</td>
+                <td>10.96</td>
+                <td>随机初始化（预期 $\approx -\ln(1/V) \approx 10.82$）</td>
+            </tr>
+            <tr>
+                <td>1</td>
+                <td>9.22</td>
+                <td>开始学习</td>
+            </tr>
+            <tr>
+                <td>10</td>
+                <td>2.48</td>
+                <td>快速下降</td>
+            </tr>
+            <tr>
+                <td>50</td>
+                <td>0.01</td>
+                <td>成功过拟合 (验证通过)</td>
+            </tr>
+        </tbody>
+    </table>
+    <div class="info-box formula">
+        <strong>理论初始 loss</strong>：如果模型完全随机，对均匀分布 $\text{loss} = -\ln\frac{1}{V} = \ln(50257) \approx 10.82$。实际值 10.96 略高是因为初始权重非完美均匀。
+    </div>
+
+    <h3 id="sec8-2">8.2 随机模型 vs 预训练模型对比</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>指标</th>
+                <th>随机初始化模型</th>
+                <th>预训练模型 (GPT-2 124M)</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>初始 val loss</td>
+                <td>~10.96</td>
+                <td>~3.29</td>
+            </tr>
+            <tr>
+                <td>HellaSwag</td>
+                <td>~25% (接近随机)</td>
+                <td>~29.55%</td>
+            </tr>
+            <tr>
+                <td>生成质量</td>
+                <td>无意义 token 序列</td>
+                <td>基本通顺的文本</td>
+            </tr>
+        </tbody>
+    </table>
+    <p><strong>验证流程总结</strong>：</p>
+    <ol>
+        <li><strong>检查初始 loss</strong> $\approx \ln(V)$，确认初始化正确</li>
+        <li><strong>单 batch 过拟合</strong>，确认前向/反向/优化器工作正常</li>
+        <li><strong>对比 HuggingFace 预训练权重</strong>，确认架构兼容</li>
+        <li><strong>启动完整训练</strong>，观察 loss 曲线和 HellaSwag 提升</li>
+    </ol>
+
+    <!-- Summary -->
+    <h2 id="summary">核心要点总结</h2>
+    <div class="info-box key">
+        <ol>
+            <li><strong>GPT = Decoder-only Transformer</strong>：Pre-Norm + Learned PE + GELU，结构简洁但效果强大</li>
+            <li><strong>Weight Tying</strong> 共享 embedding 和 LM head，节省 ~31% 参数且提升泛化</li>
+            <li><strong>Flash Attention</strong> 通过 IO-aware tiling 将注意力内存从 $O(T^2)$ 降至 $O(T)$，实际加速 2-4x</li>
+            <li><strong>训练优化组合拳</strong>：BF16 + TF32 + Flash + Gradient Accumulation + DDP + Fused AdamW + torch.compile</li>
+            <li><strong>Cosine LR + Warmup</strong> 是标准训练策略，warmup 避免初期不稳定，cosine 平滑衰减</li>
+            <li><strong>Weight Decay 只应用于权重矩阵</strong>，不应用于 bias 和 LayerNorm 参数</li>
+            <li><strong>HellaSwag</strong> 是评估语言模型常识推理能力的有效 benchmark，体现 scaling law</li>
+            <li><strong>验证三步法</strong>：初始 loss 检查 → 单 batch 过拟合 → 对比预训练权重，确保实现正确后再全量训练</li>
+        </ol>
+    </div>
+
+    <!-- Page Navigation -->
+    <div class="page-nav">
+        <a href="05-transformers.html">&larr; 上一章: Transformers</a>
+        <a href="07-bert-benchmarks.html">下一章: BERT &amp; Benchmarks &rarr;</a>
+    </div>
+</main>
+
+<script>
+    hljs.highlightAll();
+
+    // Sidebar toggle
+    var sidebar = document.getElementById('sidebar');
+    var toggle = document.getElementById('sidebarToggle');
+    if (toggle) {
+        toggle.addEventListener('click', function() {
+            sidebar.classList.toggle('open');
+        });
+    }
+    // Close sidebar on link click (mobile)
+    if (sidebar) {
+        sidebar.querySelectorAll('a').forEach(function(link) {
+            link.addEventListener('click', function() {
+                if (window.innerWidth <= 1024) {
+                    sidebar.classList.remove('open');
+                }
+            });
+        });
+    }
+</script>
+<script>
+    document.addEventListener("DOMContentLoaded", function() {
+        renderMathInElement(document.body, {
+            delimiters: [
+                {left: "$$", right: "$$", display: true},
+                {left: "$", right: "$", display: false}
+            ],
+            throwOnError: false
+        });
+    });
+</script>
+</body>
+</html>

@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NLP & LLM 课程学习笔记</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="assets/katex.min.css">
+    <link rel="stylesheet" href="assets/monokai-sublime.min.css">
+    <script defer src="assets/katex.min.js"></script>
+    <script defer src="assets/auto-render.min.js"></script>
+    <script src="assets/highlight.min.js"></script>
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+    <h1>NLP & LLM 课程学习笔记</h1>
+</header>
+
+<!-- Main Content (no sidebar on index page) -->
+<div class="main" style="margin-left: 0; max-width: 1100px; margin-left: auto; margin-right: auto;">
+
+    <!-- Course Info -->
+    <section style="text-align: center; margin-bottom: 48px;">
+        <h1>NLP & LLM 课程学习笔记</h1>
+        <p style="font-size: 1.1rem; color: var(--text-light);">
+            CS40008.01 / DATA130030.01 &mdash; Natural Language Processing and Large Language Models
+        </p>
+        <p style="color: var(--text-light);">
+            授课教师：Baojian Zhou &nbsp;|&nbsp; 复旦大学数据科学学院
+        </p>
+    </section>
+
+    <!-- Chapter Grid -->
+    <h2>章节目录</h2>
+    <div class="chapter-grid">
+        <div class="chapter-card">
+            <h3>L01 Tokenization</h3>
+            <p>正则表达式、Heap定律、最小编辑距离、BPE/WordPiece/Unigram 分词算法</p>
+            <a href="01-tokenization.html">阅读笔记 →</a>
+        </div>
+        <div class="chapter-card">
+            <h3>L02 N-gram 语言模型</h3>
+            <p>KL散度、MLE、平滑技术（Laplace/KN）、Perplexity、KenLM 工具</p>
+            <a href="02-ngram-lm.html">阅读笔记 →</a>
+        </div>
+        <div class="chapter-card">
+            <h3>L03 词嵌入</h3>
+            <p>NB/LR分类、TF-IDF、PPMI、Word2Vec SGNS、Qwen3 Embedding</p>
+            <a href="03-embeddings.html">阅读笔记 →</a>
+        </div>
+        <div class="chapter-card">
+            <h3>L04 神经语言模型</h3>
+            <p>NPLM（Bengio 2003）、RNN、BPTT、梯度消失/爆炸、LSTM 门控机制</p>
+            <a href="04-neural-lm.html">阅读笔记 →</a>
+        </div>
+        <div class="chapter-card">
+            <h3>L05 Transformer</h3>
+            <p>Self-Attention、Multi-Head Attention、位置编码、Encoder-Decoder 架构</p>
+            <a href="05-transformer.html">阅读笔记 →</a>
+        </div>
+        <div class="chapter-card">
+            <h3>L06 GPT 系列</h3>
+            <p>GPT-2架构、Flash Attention、DDP训练、Cosine LR、HellaSwag 评测</p>
+            <a href="06-gpt.html">阅读笔记 →</a>
+        </div>
+        <div class="chapter-card">
+            <h3>L07 BERT 与评测</h3>
+            <p>GLUE基准、Zero-shot评测、HLE、ARC-AGI-3 推理基准</p>
+            <a href="07-bert-benchmarks.html">阅读笔记 →</a>
+        </div>
+        <div class="chapter-card">
+            <h3>L08 RLHF 对齐</h3>
+            <p>InstructGPT三阶段、SFT、Reward Model（Bradley-Terry）、PPO 策略优化</p>
+            <a href="08-sft-rm-ppo.html">阅读笔记 →</a>
+        </div>
+    </div>
+
+    <!-- Technology Evolution Roadmap -->
+    <h2>技术演进路线图</h2>
+    <div class="roadmap">
+        <pre><code>文本预处理 (L01)
+    │
+    ▼
+统计语言模型: N-gram + 平滑 (L02)
+    │
+    ▼
+词表示: TF-IDF → PPMI → Word2Vec (L03)
+    │
+    ▼
+神经语言模型: NPLM → RNN → LSTM (L04)
+    │
+    ▼
+Transformer 架构 (L05)
+    │
+    ├──► Decoder-only: GPT 系列预训练 (L06)
+    │
+    ├──► Encoder-only: BERT + 下游评测 (L07)
+    │
+    └──► 对齐: SFT → RM → PPO (RLHF) (L08)</code></pre>
+    </div>
+
+    <!-- Core Formula Quick-Reference Table -->
+    <h2>核心公式速查</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>名称</th>
+                <th>公式</th>
+                <th>出处</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>自回归分解</td>
+                <td>$$p_\theta(w_{1:T}) = \prod_{t=1}^T p_\theta(w_t | w_{1:t-1})$$</td>
+                <td>L02 / L04</td>
+            </tr>
+            <tr>
+                <td>困惑度</td>
+                <td>$$PPL = 2^{-\frac{1}{M}\sum_i \log_2 p(s_i)}$$</td>
+                <td>L02</td>
+            </tr>
+            <tr>
+                <td>注意力机制</td>
+                <td>$$\text{Attention}(Q,K,V) = \text{softmax}\!\left(\frac{QK^T}{\sqrt{d_k}}\right)V$$</td>
+                <td>L05</td>
+            </tr>
+            <tr>
+                <td>RM 损失</td>
+                <td>$$\mathcal{L}_{RM} = -\log \sigma\!\left(r_\theta(x,y_w) - r_\theta(x,y_l)\right)$$</td>
+                <td>L08</td>
+            </tr>
+            <tr>
+                <td>RLHF 目标</td>
+                <td>$$\text{obj}(\phi) = \mathbb{E}\!\left[r_\theta(x,y) - \beta \log \frac{\pi_\phi(y|x)}{\pi_{SFT}(y|x)}\right]$$</td>
+                <td>L08</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <!-- Footer -->
+    <footer class="page-nav" style="justify-content: center; flex-direction: column; align-items: center; gap: 12px;">
+        <p style="color: var(--text-light); font-size: 0.9rem;">
+            提示：点击上方章节卡片进入各章详细笔记 | 每章笔记包含侧边栏目录导航
+        </p>
+        <p style="color: var(--text-light); font-size: 0.85rem;">
+            开始学习 → <a href="01-tokenization.html" style="color: var(--primary);">L01 Tokenization</a>
+        </p>
+    </footer>
+
+</div>
+
+<script>
+    hljs.highlightAll();
+
+    // Sidebar toggle
+    var sidebar = document.getElementById('sidebar');
+    var toggle = document.getElementById('sidebarToggle');
+    if (toggle) {
+        toggle.addEventListener('click', function() {
+            sidebar.classList.toggle('open');
+        });
+    }
+    // Close sidebar on link click (mobile)
+    if (sidebar) {
+        sidebar.querySelectorAll('a').forEach(function(link) {
+            link.addEventListener('click', function() {
+                if (window.innerWidth <= 1024) {
+                    sidebar.classList.remove('open');
+                }
+            });
+        });
+    }
+</script>
+<script>
+    document.addEventListener("DOMContentLoaded", function() {
+        renderMathInElement(document.body, {
+            delimiters: [
+                {left: "$$", right: "$$", display: true},
+                {left: "$", right: "$", display: false}
+            ],
+            throwOnError: false
+        });
+    });
+</script>
+</body>
+</html>

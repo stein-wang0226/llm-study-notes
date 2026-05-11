@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>L05: Transformer - LLM课程笔记</title>
+    <link rel="stylesheet" href="assets/katex.min.css">
+    <link rel="stylesheet" href="assets/monokai-sublime.min.css">
+    <script defer src="assets/katex.min.js"></script>
+    <script defer src="assets/auto-render.min.js"></script>
+    <script src="assets/highlight.min.js"></script>
+    <script src="assets/python.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+    <h1>NLP &amp; LLM 课程学习笔记</h1>
+    <nav class="nav-links">
+        <a href="index.html">目录</a>
+        <a href="01-tokenization.html">01</a>
+        <a href="02-ngram-lms.html">02</a>
+        <a href="03-embeddings.html">03</a>
+        <a href="04-neural-lms.html">04</a>
+        <a href="05-transformers.html" class="active">05</a>
+        <a href="06-gpts.html">06</a>
+        <a href="07-bert-benchmarks.html">07</a>
+        <a href="08-sft-rm-ppo.html">08</a>
+    </nav>
+</header>
+
+<!-- Sidebar Toggle -->
+<button class="sidebar-toggle" id="sidebarToggle">&#9776;</button>
+
+<!-- Sidebar -->
+<aside class="sidebar" id="sidebar">
+    <div class="toc-title">本章目录</div>
+    <a href="#sec1">1. 从 RNN 到 Attention</a>
+    <a href="#sec2">2. Self-Attention 机制</a>
+    <a href="#sec2-1" class="sub">2.1 Q, K, V 投影</a>
+    <a href="#sec2-2" class="sub">2.2 缩放点积注意力</a>
+    <a href="#sec2-3" class="sub">2.3 计算流程示例</a>
+    <a href="#sec3">3. Multi-Head Attention</a>
+    <a href="#sec3-1" class="sub">3.1 动机</a>
+    <a href="#sec3-2" class="sub">3.2 公式</a>
+    <a href="#sec4">4. Transformer Block</a>
+    <a href="#sec5">5. 完整 Transformer 架构</a>
+    <a href="#sec5-1" class="sub">5.1 超参数表</a>
+    <a href="#sec5-2" class="sub">5.2 Encoder</a>
+    <a href="#sec5-3" class="sub">5.3 Decoder</a>
+    <a href="#sec5-4" class="sub">5.4 Causal Mask</a>
+    <a href="#sec6">6. 位置编码</a>
+    <a href="#sec6-1" class="sub">6.1 正弦位置编码</a>
+    <a href="#sec6-2" class="sub">6.2 性质</a>
+    <a href="#sec7">7. 时间复杂度对比</a>
+    <a href="#sec8">8. 模型大小计算</a>
+    <a href="#sec9">9. 训练技巧</a>
+    <a href="#sec10">10. 核心代码实现</a>
+    <a href="#sec11">11. 实验结果</a>
+    <a href="#sec12">12. 三种 Attention 类型</a>
+    <a href="#summary">核心要点总结</a>
+</aside>
+
+<!-- Main Content -->
+<main class="main">
+    <h1>Lecture 05: Transformer 架构</h1>
+    <blockquote>
+        核心主题：Self-Attention、Multi-Head Attention、位置编码、Encoder-Decoder、机器翻译
+    </blockquote>
+
+    <!-- Section 1 -->
+    <h2 id="sec1">1. 从 RNN 到 Attention 的动机</h2>
+    <p>RNN 的核心问题：</p>
+    <ul>
+        <li><strong>顺序计算</strong>：时间复杂度 $O(n)$，无法并行化 — GPU 利用率低</li>
+        <li><strong>梯度乘法链</strong>：长距离依赖需要梯度经过多次矩阵乘法，导致梯度消失/爆炸</li>
+        <li><strong>信息瓶颈</strong>：所有历史信息压缩到固定维度的隐状态中</li>
+    </ul>
+
+    <h3>Attention 直觉："Bank of the river" 示例</h3>
+    <p>理解 "bank" 的含义需要看整个句子上下文。Attention 允许每个位置直接关注所有其他位置：</p>
+    <div class="math-block">
+        $$z_1 = \sum_{j=1}^4 w_{1j} \cdot x_j, \quad w_{1j} = \text{softmax}(x_1 \cdot x_j)$$
+    </div>
+    <ul>
+        <li>$x_j$ 是位置 $j$ 的输入表示</li>
+        <li>$w_{1j}$ 是位置 1 对位置 $j$ 的注意力权重</li>
+        <li>$z_1$ 是位置 1 的上下文感知输出</li>
+    </ul>
+    <div class="info-box key">
+        <strong>关键洞察</strong>：Attention 直接计算任意两个位置间的关系，绕过了 RNN 的顺序传播瓶颈。
+    </div>
+
+    <!-- Section 2 -->
+    <h2 id="sec2">2. Self-Attention 机制 <span style="color:#e74c3c;">&#11088;&#11088;</span></h2>
+
+    <h3 id="sec2-1">2.1 三组投影矩阵 (Q, K, V)</h3>
+    <p>对每个输入 $x_i \in \mathbb{R}^{d_{\text{model}}}$，通过三个可学习矩阵投影：</p>
+    <ul>
+        <li><strong>Query</strong>: $q_i = W^Q x_i$ — "我在找什么"</li>
+        <li><strong>Key</strong>: $k_i = W^K x_i$ — "我包含什么信息"</li>
+        <li><strong>Value</strong>: $v_i = W^V x_i$ — "如果匹配，我提供什么"</li>
+    </ul>
+    <p>维度：$W^Q, W^K \in \mathbb{R}^{d_{\text{model}} \times d_k}$，$W^V \in \mathbb{R}^{d_{\text{model}} \times d_v}$</p>
+    <div class="info-box formula">
+        <strong>直觉</strong>：将 Q/K/V 分离允许模型学习不同的"查询"和"被查询"表示，比直接用原始向量做点积更灵活。
+    </div>
+
+    <h3 id="sec2-2">2.2 缩放点积注意力 (Scaled Dot-Product Attention)</h3>
+    <div class="math-block">
+        $$\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right) V$$
+    </div>
+    <p><strong>为什么除以 $\sqrt{d_k}$？</strong></p>
+    <ul>
+        <li>设 $q, k$ 各分量独立且均值为 0、方差为 1</li>
+        <li>则 $q \cdot k = \sum_{i=1}^{d_k} q_i k_i$ 的方差为 $d_k$</li>
+        <li>当 $d_k$ 较大时，点积值会很大，softmax 会进入梯度极小的饱和区</li>
+        <li>除以 $\sqrt{d_k}$ 将方差归一化为 1，保持 softmax 在有效梯度区域</li>
+    </ul>
+
+    <h3 id="sec2-3">2.3 计算流程示例 (位置 3)</h3>
+    <p>假设序列长度 $n=4$，计算位置 3 的输出 $z_3$：</p>
+    <ol>
+        <li>计算 $q_3 = W^Q x_3$</li>
+        <li>计算所有 key：$k_1, k_2, k_3, k_4$</li>
+        <li>计算注意力分数：$\alpha_{3j} = \frac{q_3 \cdot k_j}{\sqrt{d_k}}, \quad j=1,2,3,4$</li>
+        <li>Softmax 归一化：$w_{3j} = \frac{e^{\alpha_{3j}}}{\sum_{l=1}^4 e^{\alpha_{3l}}}$</li>
+        <li>加权求和：$z_3 = \sum_{j=1}^4 w_{3j} \cdot v_j$</li>
+    </ol>
+
+    <!-- Section 3 -->
+    <h2 id="sec3">3. Multi-Head Attention <span style="color:#e74c3c;">&#11088;</span></h2>
+
+    <h3 id="sec3-1">3.1 动机</h3>
+    <ul>
+        <li>单头注意力只能学习一种"关注模式"</li>
+        <li>多头允许模型同时关注不同类型的关系（语法、语义、位置等）</li>
+        <li>类似于 CNN 中多个 filter 捕获不同特征</li>
+    </ul>
+
+    <h3 id="sec3-2">3.2 公式</h3>
+    <div class="math-block">
+        $$\text{MultiHead}(Q, K, V) = \text{Concat}(\text{head}_1, \ldots, \text{head}_H) \cdot W^O$$
+    </div>
+    <div class="math-block">
+        $$\text{head}_i = \text{Attention}(QW_i^Q, KW_i^K, VW_i^V)$$
+    </div>
+    <p>标准配置：</p>
+    <ul>
+        <li>$H = 8$ 个头</li>
+        <li>$d_k = d_v = d_{\text{model}} / H = 512 / 8 = 64$</li>
+        <li>$W^O \in \mathbb{R}^{Hd_v \times d_{\text{model}}} = \mathbb{R}^{512 \times 512}$</li>
+    </ul>
+    <div class="info-box key">
+        <strong>计算量不变</strong>：虽然有 $H$ 个头，但每个头的维度缩小为 $d_k = d_{\text{model}}/H$，总计算量与单头 $d_{\text{model}}$ 维注意力相当。
+    </div>
+
+    <!-- Section 4 -->
+    <h2 id="sec4">4. Transformer Block</h2>
+    <p>每个 Transformer Block 包含 4 个步骤：</p>
+
+    <p><strong>Step 1: Multi-Head Attention</strong></p>
+    <p>$u'_i = \text{MultiHead}(x_i, X, X)$，其中 $x_i$ 提供 Q，$X$ 提供 K 和 V。</p>
+
+    <p><strong>Step 2: Add &amp; Norm (残差连接 + 层归一化)</strong></p>
+    <div class="math-block">
+        $$u_i = \text{LayerNorm}(x_i + u'_i; \gamma_1, \beta_1)$$
+    </div>
+
+    <p><strong>Step 3: Position-wise Feed-Forward Network (FFN)</strong></p>
+    <div class="math-block">
+        $$z'_i = W_2^T \cdot \text{ReLU}(W_1^T \cdot u_i)$$
+    </div>
+    <p>其中 $W_1 \in \mathbb{R}^{d_{\text{model}} \times d_{ff}}$，$W_2 \in \mathbb{R}^{d_{ff} \times d_{\text{model}}}$，$d_{ff} = 2048$。</p>
+
+    <p><strong>Step 4: Add &amp; Norm</strong></p>
+    <div class="math-block">
+        $$z_i = \text{LayerNorm}(u_i + z'_i; \gamma_2, \beta_2)$$
+    </div>
+
+    <h3>LayerNorm 定义</h3>
+    <div class="math-block">
+        $$\text{LayerNorm}(x; \gamma, \beta) = \gamma \odot \frac{x - \mu}{\sqrt{\sigma^2 + \epsilon}} + \beta$$
+    </div>
+    <p>其中 $\mu, \sigma^2$ 是对单个样本各维度计算的均值和方差（不同于 BatchNorm 跨 batch 计算）。</p>
+
+    <!-- Section 5 -->
+    <h2 id="sec5">5. 完整 Transformer 架构</h2>
+
+    <h3 id="sec5-1">5.1 超参数表</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>超参数</th>
+                <th>符号</th>
+                <th>值</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>模型维度</td>
+                <td>$d_{\text{model}}$</td>
+                <td>512</td>
+            </tr>
+            <tr>
+                <td>Key/Value 维度</td>
+                <td>$d_k = d_v$</td>
+                <td>64</td>
+            </tr>
+            <tr>
+                <td>注意力头数</td>
+                <td>$H$</td>
+                <td>8</td>
+            </tr>
+            <tr>
+                <td>FFN 隐层维度</td>
+                <td>$d_{ff}$</td>
+                <td>2048</td>
+            </tr>
+            <tr>
+                <td>Encoder/Decoder 层数</td>
+                <td>$L$</td>
+                <td>6</td>
+            </tr>
+            <tr>
+                <td>Dropout</td>
+                <td>$p$</td>
+                <td>0.1</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3 id="sec5-2">5.2 Encoder</h3>
+    <ul>
+        <li>输入：源序列 token embeddings + positional encoding</li>
+        <li>结构：$L=6$ 个相同的 Transformer Block 堆叠</li>
+        <li>每个 block：Self-Attention → Add&Norm → FFN → Add&Norm</li>
+        <li>输出：每个位置的上下文表示 $\{h_1, \ldots, h_n\}$</li>
+    </ul>
+
+    <h3 id="sec5-3">5.3 Decoder</h3>
+    <p>每个 Decoder Block 有 <strong>3 个子层</strong>：</p>
+    <ol>
+        <li><strong>Masked Self-Attention</strong>：只看已生成的 token（防止信息泄露）</li>
+        <li><strong>Cross-Attention</strong>：Q 来自 decoder，K/V 来自 encoder 输出</li>
+        <li><strong>FFN</strong>：与 encoder 相同的前馈网络</li>
+    </ol>
+    <p>每个子层后都接 Add &amp; Norm。</p>
+
+    <h3 id="sec5-4">5.4 Causal Mask 代码</h3>
+    <pre><code class="language-python">import numpy as np
+
+def causal_mask(size):
+    """生成因果掩码，防止 decoder 看到未来的 token"""
+    # 上三角为 -inf，对角线及以下为 0
+    mask = np.triu(np.ones((size, size)), k=1)
+    mask[mask == 1] = -np.inf
+    return mask
+
+# 示例：序列长度为 4
+print(causal_mask(4))
+# [[  0. -inf -inf -inf]
+#  [  0.   0. -inf -inf]
+#  [  0.   0.   0. -inf]
+#  [  0.   0.   0.   0.]]</code></pre>
+    <div class="info-box formula">
+        <strong>效果</strong>：将掩码加到注意力分数上，$-\infty$ 经过 softmax 后变为 0，确保位置 $i$ 只能注意到 $\leq i$ 的位置。
+    </div>
+
+    <!-- Section 6 -->
+    <h2 id="sec6">6. 位置编码 (Positional Encoding)</h2>
+
+    <h3 id="sec6-1">6.1 正弦位置编码公式</h3>
+    <p>由于 Self-Attention 对位置无感知（排列不变性），需要注入位置信息：</p>
+    <div class="math-block">
+        $$PE(pos, 2i) = \sin\left(\frac{pos}{10000^{2i/d_{\text{model}}}}\right)$$
+    </div>
+    <div class="math-block">
+        $$PE(pos, 2i+1) = \cos\left(\frac{pos}{10000^{2i/d_{\text{model}}}}\right)$$
+    </div>
+    <p>其中 $pos$ 为位置索引，$i$ 为维度索引（$0 \leq i < d_{\text{model}}/2$）。</p>
+
+    <h3 id="sec6-2">6.2 性质</h3>
+    <ul>
+        <li><strong>唯一性</strong>：每个位置有唯一的编码向量</li>
+        <li><strong>有界性</strong>：所有值在 $[-1, 1]$ 之间</li>
+        <li><strong>线性可表达相对位置</strong>：$PE(pos+k)$ 可以表示为 $PE(pos)$ 的线性函数</li>
+        <li><strong>可推广到训练未见过的长度</strong>：不依赖学习参数</li>
+        <li><strong>低维度 = 低频</strong>：捕获粗粒度位置；<strong>高维度 = 高频</strong>：捕获精细位置</li>
+    </ul>
+    <div class="info-box key">
+        <strong>使用方式</strong>：$\text{input}_i = \text{Embedding}(token_i) + PE(i)$，直接加到 token embedding 上。
+    </div>
+
+    <!-- Section 7 -->
+    <h2 id="sec7">7. 时间复杂度对比</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>模型</th>
+                <th>每层复杂度</th>
+                <th>顺序操作数</th>
+                <th>最大路径长度</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Self-Attention</td>
+                <td>$O(n^2 \cdot d)$</td>
+                <td>$O(1)$</td>
+                <td>$O(1)$</td>
+            </tr>
+            <tr>
+                <td>RNN</td>
+                <td>$O(n \cdot d^2)$</td>
+                <td>$O(n)$</td>
+                <td>$O(n)$</td>
+            </tr>
+            <tr>
+                <td>CNN (kernel $k$)</td>
+                <td>$O(k \cdot n \cdot d^2)$</td>
+                <td>$O(1)$</td>
+                <td>$O(\log_k n)$</td>
+            </tr>
+        </tbody>
+    </table>
+    <div class="info-box formula">
+        <strong>权衡</strong>：Self-Attention 的 $O(n^2)$ 在长序列时成为瓶颈，但对于常见长度（$n < d$），并行性和短路径带来巨大优势。
+    </div>
+
+    <!-- Section 8 -->
+    <h2 id="sec8">8. 模型大小计算</h2>
+    <p>Transformer Base 模型参数量估算：</p>
+    <table>
+        <thead>
+            <tr>
+                <th>组件</th>
+                <th>参数量</th>
+                <th>计算</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Multi-Head Attention</td>
+                <td>$4 \cdot d_{\text{model}}^2$</td>
+                <td>$4 \times 512^2 = 1,048,576$</td>
+            </tr>
+            <tr>
+                <td>FFN</td>
+                <td>$2 \cdot d_{\text{model}} \cdot d_{ff}$</td>
+                <td>$2 \times 512 \times 2048 = 2,097,152$</td>
+            </tr>
+            <tr>
+                <td>LayerNorm (x2)</td>
+                <td>$4 \cdot d_{\text{model}}$</td>
+                <td>$4 \times 512 = 2,048$</td>
+            </tr>
+            <tr>
+                <td>单层总计</td>
+                <td>-</td>
+                <td>$\approx 3.15M$</td>
+            </tr>
+            <tr>
+                <td>Encoder (6层)</td>
+                <td>-</td>
+                <td>$\approx 18.9M$</td>
+            </tr>
+            <tr>
+                <td>Decoder (6层)</td>
+                <td>-</td>
+                <td>$\approx 24.5M$ (含 cross-attn)</td>
+            </tr>
+            <tr>
+                <td>Embedding</td>
+                <td>$|V| \cdot d_{\text{model}}$</td>
+                <td>$37000 \times 512 \approx 19M$</td>
+            </tr>
+            <tr>
+                <td><strong>总计 (Base)</strong></td>
+                <td>-</td>
+                <td><strong>$\approx 65M$</strong></td>
+            </tr>
+        </tbody>
+    </table>
+
+    <!-- Section 9 -->
+    <h2 id="sec9">9. 训练技巧</h2>
+
+    <h3 id="sec9-1">9.1 学习率调度 (Warmup + Inverse Sqrt Decay)</h3>
+    <div class="math-block">
+        $$lr = d_{\text{model}}^{-0.5} \cdot \min(\text{step}^{-0.5}, \; \text{step} \cdot \text{warmup\_steps}^{-1.5})$$
+    </div>
+    <ul>
+        <li>前 $\text{warmup\_steps}$ 步线性增长</li>
+        <li>之后按步数的 $-0.5$ 次方衰减</li>
+        <li>原文 warmup_steps = 4000</li>
+    </ul>
+
+    <h3 id="sec9-2">9.2 Label Smoothing</h3>
+    <ul>
+        <li>将 one-hot 目标分布替换为：正确类 $1 - \epsilon$，其余类均分 $\epsilon / (|V|-1)$</li>
+        <li>原文 $\epsilon = 0.1$</li>
+        <li>轻微降低 perplexity 但提升 BLEU（鼓励模型不过于自信）</li>
+    </ul>
+
+    <h3 id="sec9-3">9.3 Embedding 缩放</h3>
+    <p>将 embedding 乘以 $\sqrt{d_{\text{model}}}$，使得 embedding 值的量级与位置编码相当：</p>
+    <div class="math-block">
+        $$\text{input}_i = \sqrt{d_{\text{model}}} \cdot \text{Embedding}(token_i) + PE(i)$$
+    </div>
+
+    <h3 id="sec9-4">9.4 Weight Sharing</h3>
+    <ul>
+        <li>Encoder embedding 和 Decoder embedding 共享权重</li>
+        <li>Decoder embedding 和最终 linear 层（output projection）共享权重</li>
+        <li>减少参数量，作为正则化</li>
+    </ul>
+
+    <!-- Section 10 -->
+    <h2 id="sec10">10. 核心代码实现</h2>
+
+    <h3>Attention 函数</h3>
+    <pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
+def attention(query, key, value, mask=None, dropout=None):
+    """Scaled Dot-Product Attention"""
+    d_k = query.size(-1)
+    # (batch, heads, seq_len, d_k) x (batch, heads, d_k, seq_len)
+    scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
+    
+    if mask is not None:
+        scores = scores.masked_fill(mask == 0, -1e9)
+    
+    attn_weights = F.softmax(scores, dim=-1)
+    
+    if dropout is not None:
+        attn_weights = dropout(attn_weights)
+    
+    return torch.matmul(attn_weights, value), attn_weights</code></pre>
+
+    <h3>MultiHeadedAttention 类</h3>
+    <pre><code class="language-python">class MultiHeadedAttention(nn.Module):
+    def __init__(self, h, d_model, dropout=0.1):
+        super().__init__()
+        assert d_model % h == 0
+        self.d_k = d_model // h
+        self.h = h
+        # 4 个线性层: W^Q, W^K, W^V, W^O
+        self.linears = nn.ModuleList([
+            nn.Linear(d_model, d_model) for _ in range(4)
+        ])
+        self.dropout = nn.Dropout(p=dropout)
+        self.attn = None  # 存储注意力权重用于可视化
+    
+    def forward(self, query, key, value, mask=None):
+        batch_size = query.size(0)
+        
+        # 1) 线性投影并 reshape 为多头
+        # (batch, seq_len, d_model) -> (batch, h, seq_len, d_k)
+        query, key, value = [
+            lin(x).view(batch_size, -1, self.h, self.d_k).transpose(1, 2)
+            for lin, x in zip(self.linears[:3], (query, key, value))
+        ]
+        
+        # 2) 计算注意力
+        x, self.attn = attention(query, key, value, 
+                                  mask=mask, dropout=self.dropout)
+        
+        # 3) 拼接并通过最终线性层
+        # (batch, h, seq_len, d_k) -> (batch, seq_len, d_model)
+        x = x.transpose(1, 2).contiguous().view(
+            batch_size, -1, self.h * self.d_k
+        )
+        return self.linears[-1](x)</code></pre>
+
+    <h3>PositionwiseFeedForward</h3>
+    <pre><code class="language-python">class PositionwiseFeedForward(nn.Module):
+    def __init__(self, d_model, d_ff, dropout=0.1):
+        super().__init__()
+        self.w_1 = nn.Linear(d_model, d_ff)
+        self.w_2 = nn.Linear(d_ff, d_model)
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, x):
+        return self.w_2(self.dropout(F.relu(self.w_1(x))))</code></pre>
+
+    <!-- Section 11 -->
+    <h2 id="sec11">11. 实验结果 (WMT14)</h2>
+
+    <h3>BLEU 分数对比</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>模型</th>
+                <th>EN-DE BLEU</th>
+                <th>EN-FR BLEU</th>
+                <th>训练代价 (FLOPs)</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>GNMT + RL</td>
+                <td>24.6</td>
+                <td>39.92</td>
+                <td>$2.3 \times 10^{19}$</td>
+            </tr>
+            <tr>
+                <td>ConvS2S</td>
+                <td>25.16</td>
+                <td>40.46</td>
+                <td>$9.6 \times 10^{18}$</td>
+            </tr>
+            <tr>
+                <td>Transformer (Base)</td>
+                <td>27.3</td>
+                <td>38.1</td>
+                <td>$3.3 \times 10^{18}$</td>
+            </tr>
+            <tr>
+                <td><strong>Transformer (Big)</strong></td>
+                <td><strong>28.4</strong></td>
+                <td><strong>41.0</strong></td>
+                <td>$2.3 \times 10^{19}$</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>Ablation Study 关键发现</h3>
+    <ul>
+        <li>减少注意力头数（如 $H=1$）：BLEU 下降 0.9</li>
+        <li>减少 $d_k$：降低性能，说明注意力需要足够的表达能力</li>
+        <li>增大模型（$d_{\text{model}}=1024, H=16$）：继续提升</li>
+        <li>Dropout 对正则化至关重要，$p=0.1$ 最优</li>
+        <li>正弦位置编码 vs. 学习位置编码：性能几乎相同</li>
+    </ul>
+
+    <!-- Section 12 -->
+    <h2 id="sec12">12. Transformer 中的三种 Attention 类型</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>类型</th>
+                <th>位置</th>
+                <th>Q 来源</th>
+                <th>K/V 来源</th>
+                <th>Mask</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Encoder Self-Attention</td>
+                <td>Encoder</td>
+                <td>Encoder 当前层</td>
+                <td>Encoder 当前层</td>
+                <td>无 (全局可见)</td>
+            </tr>
+            <tr>
+                <td>Masked Self-Attention</td>
+                <td>Decoder</td>
+                <td>Decoder 当前层</td>
+                <td>Decoder 当前层</td>
+                <td>Causal mask (只看过去)</td>
+            </tr>
+            <tr>
+                <td>Cross-Attention</td>
+                <td>Decoder</td>
+                <td>Decoder 当前层</td>
+                <td>Encoder 最终输出</td>
+                <td>无</td>
+            </tr>
+        </tbody>
+    </table>
+    <div class="info-box formula">
+        <strong>记忆方法</strong>：Q 决定"谁在问"，K/V 决定"从哪里找答案"。Cross-Attention 让 decoder 从 encoder（源语言）中提取信息。
+    </div>
+
+    <!-- Summary -->
+    <h2 id="summary">核心要点总结</h2>
+    <div class="info-box key">
+        <ol>
+            <li><strong>Self-Attention 是核心创新</strong>：每个位置直接关注所有位置，$O(1)$ 最大路径长度，彻底解决 RNN 的长距离依赖问题</li>
+            <li><strong>缩放因子 $\sqrt{d_k}$</strong> 防止点积过大导致 softmax 饱和，是数值稳定性的关键</li>
+            <li><strong>Multi-Head = 多视角</strong>：$H$ 个独立的注意力头捕获不同类型的依赖关系，总计算量不增加</li>
+            <li><strong>位置编码弥补排列不变性</strong>：正弦编码无需学习、可外推；现代模型多用 RoPE 等改进方案</li>
+            <li><strong>残差连接 + LayerNorm</strong> 是深层 Transformer 可训练的基础，确保梯度流通和训练稳定</li>
+            <li><strong>Encoder-Decoder 通过 Cross-Attention 交互</strong>：decoder 的 Q 查询 encoder 的 K/V，实现条件生成</li>
+            <li><strong>"Attention Is All You Need"</strong>：完全抛弃 RNN/CNN，仅靠注意力机制即可达到 SOTA，且训练速度大幅提升</li>
+        </ol>
+    </div>
+
+    <!-- Page Navigation -->
+    <div class="page-nav">
+        <a href="04-neural-lms.html">&larr; 上一章: Neural LMs</a>
+        <a href="06-gpts.html">下一章: GPTs &rarr;</a>
+    </div>
+</main>
+
+<script>
+    hljs.highlightAll();
+
+    // Sidebar toggle
+    var sidebar = document.getElementById('sidebar');
+    var toggle = document.getElementById('sidebarToggle');
+    if (toggle) {
+        toggle.addEventListener('click', function() {
+            sidebar.classList.toggle('open');
+        });
+    }
+    // Close sidebar on link click (mobile)
+    if (sidebar) {
+        sidebar.querySelectorAll('a').forEach(function(link) {
+            link.addEventListener('click', function() {
+                if (window.innerWidth <= 1024) {
+                    sidebar.classList.remove('open');
+                }
+            });
+        });
+    }
+</script>
+<script>
+    document.addEventListener("DOMContentLoaded", function() {
+        renderMathInElement(document.body, {
+            delimiters: [
+                {left: "$$", right: "$$", display: true},
+                {left: "$", right: "$", display: false}
+            ],
+            throwOnError: false
+        });
+    });
+</script>
+</body>
+</html>
