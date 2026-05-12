@@ -19,3 +19,5 @@
 | L06 GPT 系列 | GPT-2架构、Flash Attention、DDP训练、HellaSwag评测 |
 | L07 BERT 与评测 | GLUE基准、Zero-shot评测、HLE、ARC-AGI-3推理基准 |
 | L08 RLHF 对齐 | InstructGPT三阶段、SFT、Reward Model、PPO策略优化 |
+
+全部由 Claude Code 生成部署
